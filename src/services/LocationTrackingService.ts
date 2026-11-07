@@ -98,7 +98,8 @@ export class LocationTrackingService {
         notification: {
           title: 'Family Sharing Active',
           text: 'Sharing live location with your family circle.',
-          color: '#2563EB',
+          color: '#DC2626',
+          smallIcon: 'drawable/notification_icon',
           priority: -2, // Min
         },
       },

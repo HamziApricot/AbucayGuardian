@@ -452,6 +452,8 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
         data: { type: 'ndrrmc_alert', alertType: 'loud_ping', fromName, emergencyId: 'loud_ping' },
         android: {
           channelId,
+          smallIcon: 'notification_icon',
+          color: '#DC2626',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           category: notifee.AndroidCategory?.ALARM ?? 'alarm', // ALARM category wakes the device and triggers Full-Screen Intent!
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
@@ -565,6 +567,8 @@ export async function sendSafetyCheckNotification(
         },
         android: {
           channelId,
+          smallIcon: 'notification_icon',
+          color: '#DC2626',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the screen and triggers Full-Screen Intent
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
@@ -835,6 +839,8 @@ export async function triggerTestNDRRMCAlert(
           },
           android: {
             channelId,
+            smallIcon: 'notification_icon',
+            color: '#DC2626',
             importance: notifee.AndroidImportance?.HIGH ?? 4,
             category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the device and triggers Full-Screen Intent
             visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
