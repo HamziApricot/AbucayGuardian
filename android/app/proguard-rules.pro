@@ -7,8 +7,25 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# react-native-reanimated
+# React Native Core & TurboModules
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
+-keep class com.facebook.react.bridge.** { *; }
 
-# Add any project specific keep options here:
+# Notifee (Full-Screen Intents & Notifications)
+-keep class app.notifee.** { *; }
+-keep class com.facebook.react.modules.core.DeviceEventManagerModule$RCTDeviceEventEmitter { *; }
+
+# MapLibre Native 3D Maps
+-keep class org.maplibre.android.** { *; }
+-keep class com.maplibre.** { *; }
+-dontwarn org.maplibre.android.**
+
+# Expo Modules & Notifications
+-keep class expo.modules.** { *; }
+-keep class expo.modules.notifications.** { *; }
+-keep class expo.modules.intentlauncher.** { *; }
+
+# Background Geolocation
+-keep class com.transistorsoft.locationmanager.** { *; }
+-dontwarn com.transistorsoft.locationmanager.**
