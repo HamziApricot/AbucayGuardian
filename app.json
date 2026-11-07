@@ -97,7 +97,8 @@
           "icon": "./assets/notification-icon.png",
           "color": "#E63946",
           "sounds": [
-            "./assets/alert.mp3"
+            "./assets/alert.mp3",
+            "./assets/notif.mp3"
           ]
         }
       ],

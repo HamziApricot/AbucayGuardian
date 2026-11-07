@@ -7,10 +7,20 @@ export const GUARDIAN_QUICK_ACTIONS_CATEGORY = 'GUARDIAN_QUICK_ACTIONS_V2';
 export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
 export const NDRRMC_ALERT_CATEGORY = 'NDRRMC_ALERT_CATEGORY_V3';
 export const GUARDIAN_PERSISTENT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL';
-export const NDRRMC_EMERGENCY_CHANNEL_ID = 'ndrrmc_emergency_v6';
-export const NOTIFEE_EMERGENCY_CHANNEL_ID = 'emergency_alert_v4';
-export const SOS_EMERGENCY_CHANNEL_ID = 'emergency_sos_v2';
+
+// Dedicated Channels & Sounds
+export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v1';
+export const EXPO_SIREN_CHANNEL_ID = 'guardian_siren_channel_v1';
 export const EMERGENCY_ALERT_SOUND = 'alert.mp3';
+
+export const NOTIFEE_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v1';
+export const EXPO_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v1';
+export const SAFETY_CHECK_SOUND = 'notif.mp3';
+
+// Backward compatibility aliases
+export const NDRRMC_EMERGENCY_CHANNEL_ID = EXPO_SIREN_CHANNEL_ID;
+export const NOTIFEE_EMERGENCY_CHANNEL_ID = NOTIFEE_SIREN_CHANNEL_ID;
+export const SOS_EMERGENCY_CHANNEL_ID = EXPO_SIREN_CHANNEL_ID;
 
 /**
  * Safely probes whether @notifee/react-native native module is available
@@ -78,14 +88,16 @@ export async function initEmergencyNotifications(): Promise<void> {
       console.warn('[NotificationService] Notification permission not granted');
     }
 
-    // Ensure Notifee channel is registered with Android OS immediately on app startup
+    // Ensure Notifee channels are registered with Android OS immediately on app startup
     const notifee = getNotifee();
     if (notifee) {
       try {
         await notifee.requestPermission({ criticalAlert: true });
+
+        // Siren & Loud Ping Channel (alert.mp3)
         await notifee.createChannel({
-          id: NOTIFEE_EMERGENCY_CHANNEL_ID,
-          name: '🚨 Emergency Alerts',
+          id: NOTIFEE_SIREN_CHANNEL_ID,
+          name: '🚨 Emergency Siren & Loud Ping',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
           bypassDnd: true,
@@ -94,7 +106,21 @@ export async function initEmergencyNotifications(): Promise<void> {
           vibration: true,
           vibrationPattern: [300, 500],
         });
-        console.log('[NotificationService] Notifee emergency channel registered on startup');
+
+        // Safety Check-In Channel (notif.mp3)
+        await notifee.createChannel({
+          id: NOTIFEE_CHECKIN_CHANNEL_ID,
+          name: '⚠️ Safety Check-In Alerts',
+          importance: notifee.AndroidImportance?.HIGH ?? 4,
+          visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
+          bypassDnd: true,
+          sound: 'notif',
+          lights: true,
+          vibration: true,
+          vibrationPattern: [300, 500],
+        });
+
+        console.log('[NotificationService] Notifee siren & checkin channels registered on startup');
       } catch (err) {
         console.warn('[NotificationService] Notifee startup channel error:', err);
       }
@@ -189,42 +215,9 @@ export async function initEmergencyNotifications(): Promise<void> {
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
 
-      // High-Priority Channel for SOS Alerts (Maximum Importance, uses alert.mp3)
-      await Notifications.setNotificationChannelAsync(SOS_EMERGENCY_CHANNEL_ID, {
-        name: '🚨 Emergency SOS Alerts',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 600, 200, 600, 200, 1000, 300, 1000],
-        enableVibrate: true,
-        enableLights: true,
-        lightColor: '#DC2626',
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: true,
-        sound: EMERGENCY_ALERT_SOUND,
-      });
-
-      // Clean up legacy cached channels that may lack heads-up popdown priority
-      try {
-        await Notifications.deleteNotificationChannelAsync('checkin_requests');
-        await Notifications.deleteNotificationChannelAsync('loud_ping');
-        await Notifications.deleteNotificationChannelAsync('emergency_sos');
-        await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v3');
-        await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v4');
-        await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v5');
-      } catch {}
-
-      const notifee = getNotifee();
-      if (notifee) {
-        try {
-          await notifee.deleteChannel('emergency_alert_channel');
-          await notifee.deleteChannel('emergency_alert_v2');
-          await notifee.deleteChannel('emergency_alert_v3');
-          await notifee.deleteChannel('emergency-check');
-        } catch {}
-      }
-
-      // Fresh Maximum-Priority Heads-Up Channel for NDRRMC Alerts (Force custom alert.mp3)
-      await Notifications.setNotificationChannelAsync(NDRRMC_EMERGENCY_CHANNEL_ID, {
-        name: '🚨 NDRRMC Emergency Warning Channel',
+      // Dedicated Maximum-Priority Channel for SOS & Loud Ping Siren (sound: alert.mp3)
+      await Notifications.setNotificationChannelAsync(EXPO_SIREN_CHANNEL_ID, {
+        name: '🚨 Emergency Siren & Loud Ping',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 800, 200, 800, 200, 1000, 300, 1000],
         enableVibrate: true,
@@ -235,6 +228,53 @@ export async function initEmergencyNotifications(): Promise<void> {
         sound: EMERGENCY_ALERT_SOUND,
         showBadge: true,
       });
+
+      // Dedicated Maximum-Priority Channel for Safety Check-In Alerts (sound: notif.mp3)
+      await Notifications.setNotificationChannelAsync(EXPO_CHECKIN_CHANNEL_ID, {
+        name: '⚠️ Safety Check-In Alerts',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 200, 500],
+        enableVibrate: true,
+        enableLights: true,
+        lightColor: '#2563EB',
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+        sound: SAFETY_CHECK_SOUND,
+        showBadge: true,
+      });
+
+      // Clean up legacy cached channels that may lack heads-up popdown priority or custom sound
+      const legacyExpoChannels = [
+        'checkin_requests',
+        'loud_ping',
+        'emergency_sos',
+        'emergency_sos_v2',
+        'ndrrmc_emergency_v3',
+        'ndrrmc_emergency_v4',
+        'ndrrmc_emergency_v5',
+        'ndrrmc_emergency_v6',
+      ];
+      for (const ch of legacyExpoChannels) {
+        try {
+          await Notifications.deleteNotificationChannelAsync(ch);
+        } catch {}
+      }
+
+      const notifee = getNotifee();
+      if (notifee) {
+        const legacyNotifeeChannels = [
+          'emergency_alert_channel',
+          'emergency_alert_v2',
+          'emergency_alert_v3',
+          'emergency_alert_v4',
+          'emergency-check',
+        ];
+        for (const ch of legacyNotifeeChannels) {
+          try {
+            await notifee.deleteChannel(ch);
+          } catch {}
+        }
+      }
     }
 
     // 3. Handle button clicks & notification interaction (both foreground and background actions)
@@ -419,9 +459,8 @@ export async function triggerSOSNotification(
         categoryIdentifier: GUARDIAN_QUICK_ACTIONS_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
         data: { type: 'sos', senderName, lat, lng },
-        ...(Platform.OS === 'android' ? { channelId: SOS_EMERGENCY_CHANNEL_ID } : {}),
       },
-      trigger: null, // immediate
+      trigger: (Platform.OS === 'android' ? { channelId: EXPO_SIREN_CHANNEL_ID } : null) as any,
     });
   } catch (e) {
     console.warn('[NotificationService] SOS notification error:', e);
@@ -439,12 +478,12 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
     try {
       await notifee.requestPermission({ criticalAlert: true });
       const channelId = await notifee.createChannel({
-        id: NOTIFEE_EMERGENCY_CHANNEL_ID,
-        name: '🚨 Emergency Alerts',
+        id: NOTIFEE_SIREN_CHANNEL_ID,
+        name: '🚨 Emergency Siren & Loud Ping',
         importance: notifee.AndroidImportance?.HIGH ?? 4,
         visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
         bypassDnd: true,
-        sound: 'alert', // Android resolves R.raw.alert
+        sound: 'alert',
         lights: true,
         vibration: true,
         vibrationPattern: [300, 500],
@@ -456,6 +495,7 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
         data: { type: 'ndrrmc_alert', alertType: 'loud_ping', fromName, emergencyId: 'loud_ping' },
         android: {
           channelId,
+          sound: 'alert',
           smallIcon: 'notification_icon',
           color: '#DC2626',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
@@ -493,7 +533,7 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
           interruptionLevel: 'critical',
         },
       });
-      console.log('[NotificationService] Loud ping displayed via Notifee Full-Screen Intent');
+      console.log('[NotificationService] Loud ping displayed via Notifee Full-Screen Intent (sound: alert)');
       return;
     } catch (e) {
       console.warn('[NotificationService] Notifee loud ping fallback:', e);
@@ -511,9 +551,8 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
         categoryIdentifier: NDRRMC_ALERT_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
         data: { type: 'ndrrmc_alert', alertType: 'loud_ping', fromName },
-        ...(Platform.OS === 'android' ? { channelId: NDRRMC_EMERGENCY_CHANNEL_ID } : {}),
       },
-      trigger: null,
+      trigger: (Platform.OS === 'android' ? { channelId: EXPO_SIREN_CHANNEL_ID } : null) as any,
     });
   } catch (e) {
     console.warn('[NotificationService] Loud ping notification error:', e);
@@ -548,12 +587,12 @@ export async function sendSafetyCheckNotification(
   if (notifee) {
     try {
       const channelId = await notifee.createChannel({
-        id: NOTIFEE_EMERGENCY_CHANNEL_ID,
-        name: '🚨 Emergency Alerts',
+        id: NOTIFEE_CHECKIN_CHANNEL_ID,
+        name: '⚠️ Safety Check-In Alerts',
         importance: notifee.AndroidImportance?.HIGH ?? 4,
         visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
         bypassDnd: true,
-        sound: 'alert',
+        sound: 'notif',
         lights: true,
         vibration: true,
         vibrationPattern: [300, 500],
@@ -571,8 +610,9 @@ export async function sendSafetyCheckNotification(
         },
         android: {
           channelId,
+          sound: 'notif',
           smallIcon: 'notification_icon',
-          color: '#DC2626',
+          color: '#2563EB',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the screen and triggers Full-Screen Intent
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
@@ -611,10 +651,10 @@ export async function sendSafetyCheckNotification(
           attachments: resolvedMapUrl ? [{ identifier: 'map-snapshot', url: resolvedMapUrl, type: 'image' }] : [],
           critical: true,
           criticalVolume: 1.0,
-          sound: EMERGENCY_ALERT_SOUND,
+          sound: SAFETY_CHECK_SOUND,
         },
       });
-      console.log('[RichNotification] Displayed via Notifee native engine');
+      console.log('[RichNotification] Displayed via Notifee native engine (sound: notif)');
       return;
     } catch (e) {
       console.warn('[RichNotification] Notifee display fallback:', e);
@@ -628,7 +668,7 @@ export async function sendSafetyCheckNotification(
         title: '⚠️ EMERGENCY ALERT: ARE YOU SAFE?',
         subtitle: '🚨 NDRRMC-STYLE SAFETY CHECK',
         body: `${memberName} asked: Are you safe? Tap immediately to confirm your status.`,
-        sound: EMERGENCY_ALERT_SOUND,
+        sound: SAFETY_CHECK_SOUND,
         categoryIdentifier: SAFETY_CHECK_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
         data: {
@@ -640,11 +680,10 @@ export async function sendSafetyCheckNotification(
           lat,
           lng,
         },
-        ...(Platform.OS === 'android' ? { channelId: NDRRMC_EMERGENCY_CHANNEL_ID } : {}),
       },
-      trigger: null,
+      trigger: (Platform.OS === 'android' ? { channelId: EXPO_CHECKIN_CHANNEL_ID } : null) as any,
     });
-    console.log('[RichNotification] Displayed via Expo rich categories engine');
+    console.log('[RichNotification] Displayed via Expo rich categories engine (sound: notif)');
   } catch (e) {
     console.warn('[RichNotification] Safety check notification error:', e);
   }
@@ -810,14 +849,18 @@ export async function triggerTestNDRRMCAlert(
   const notifee = getNotifee();
   if (notifee) {
     try {
-      const channelId = NOTIFEE_EMERGENCY_CHANNEL_ID;
+      const isLoudPing = alertType === 'loud_ping';
+      const channelId = isLoudPing ? NOTIFEE_SIREN_CHANNEL_ID : NOTIFEE_CHECKIN_CHANNEL_ID;
+      const soundName = isLoudPing ? 'alert' : 'notif';
+      const channelName = isLoudPing ? '🚨 Emergency Siren & Loud Ping' : '⚠️ Safety Check-In Alerts';
+
       await notifee.createChannel({
         id: channelId,
-        name: '🚨 Emergency Alerts',
+        name: channelName,
         importance: notifee.AndroidImportance?.HIGH ?? 4,
         visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
         bypassDnd: true,
-        sound: 'alert',
+        sound: soundName,
         lights: true,
         vibration: true,
         vibrationPattern: [300, 500],
@@ -833,8 +876,10 @@ export async function triggerTestNDRRMCAlert(
 
       await notifee.createTriggerNotification(
         {
-          title: alertType === 'loud_ping' ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE? • NDRRMC',
-          body: `${senderName} triggered an emergency alarm on your phone!`,
+          title: isLoudPing ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE? • NDRRMC',
+          body: isLoudPing
+            ? `${senderName} triggered an emergency alarm on your phone!`
+            : `${senderName} requested an urgent safety check-in!`,
           data: {
             type: 'ndrrmc_alert',
             alertType,
@@ -843,8 +888,9 @@ export async function triggerTestNDRRMCAlert(
           },
           android: {
             channelId,
+            sound: soundName,
             smallIcon: 'notification_icon',
-            color: '#DC2626',
+            color: isLoudPing ? '#DC2626' : '#2563EB',
             importance: notifee.AndroidImportance?.HIGH ?? 4,
             category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the device and triggers Full-Screen Intent
             visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
@@ -876,13 +922,13 @@ export async function triggerTestNDRRMCAlert(
           ios: {
             critical: true,
             criticalVolume: 1.0,
-            sound: EMERGENCY_ALERT_SOUND,
+            sound: isLoudPing ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND,
             interruptionLevel: 'critical',
           },
         },
         trigger as any
       );
-      console.log(`[NotificationService] Native hardware trigger scheduled for ${delaySeconds}s from now`);
+      console.log(`[NotificationService] Native hardware trigger scheduled for ${delaySeconds}s from now (sound: ${soundName})`);
       return;
     } catch (e) {
       console.warn('[NotificationService] Notifee native trigger error, falling back:', e);
@@ -891,24 +937,29 @@ export async function triggerTestNDRRMCAlert(
 
   // Universal Fallback via expo-notifications native interval trigger
   try {
+    const isLoudPing = alertType === 'loud_ping';
+    const expoChannel = isLoudPing ? EXPO_SIREN_CHANNEL_ID : EXPO_CHECKIN_CHANNEL_ID;
+    const soundFile = isLoudPing ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND;
+
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: alertType === 'loud_ping' ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE?',
+        title: isLoudPing ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE?',
         subtitle: '⚠️ NDRRMC PROTOCOL',
-        body: `${senderName} triggered an emergency loud alarm!`,
-        sound: EMERGENCY_ALERT_SOUND,
+        body: isLoudPing
+          ? `${senderName} triggered an emergency alarm!`
+          : `${senderName} asked: Are you safe?`,
+        sound: soundFile,
         categoryIdentifier: NDRRMC_ALERT_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
         data: { type: 'ndrrmc_alert', alertType, fromName: senderName },
-        ...(Platform.OS === 'android' ? { channelId: NDRRMC_EMERGENCY_CHANNEL_ID } : {}),
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         seconds: delaySeconds,
-        channelId: NDRRMC_EMERGENCY_CHANNEL_ID,
+        channelId: expoChannel,
       },
     });
-    console.log(`[NotificationService] Expo native interval trigger scheduled for ${delaySeconds}s`);
+    console.log(`[NotificationService] Expo native interval trigger scheduled for ${delaySeconds}s (sound: ${soundFile})`);
   } catch (e) {
     console.warn('[NotificationService] Fallback schedule error:', e);
   }
