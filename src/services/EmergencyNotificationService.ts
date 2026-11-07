@@ -8,13 +8,13 @@ export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
 export const NDRRMC_ALERT_CATEGORY = 'NDRRMC_ALERT_CATEGORY_V3';
 export const GUARDIAN_PERSISTENT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL';
 
-// Dedicated Channels & Sounds (Bumped to v2 to break any previous locked-sound caches)
-export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v2';
-export const EXPO_SIREN_CHANNEL_ID = 'guardian_siren_channel_v2';
+// Dedicated Channels & Sounds (Bumped to v3 to break any previous locked-sound caches)
+export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v3';
+export const EXPO_SIREN_CHANNEL_ID = 'guardian_siren_channel_v3';
 export const EMERGENCY_ALERT_SOUND = 'alert.mp3';
 
-export const NOTIFEE_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v2';
-export const EXPO_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v2';
+export const NOTIFEE_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v3';
+export const EXPO_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v3';
 export const SAFETY_CHECK_SOUND = 'notif.mp3';
 
 // Backward compatibility aliases
@@ -249,6 +249,8 @@ export async function initEmergencyNotifications(): Promise<void> {
 
       // Clean up legacy cached channels from previous builds so Android clears any locked system default sound
       const legacyExpoChannels = [
+        'guardian_siren_channel_v2',
+        'guardian_checkin_channel_v2',
         'guardian_siren_channel_v1',
         'guardian_checkin_channel_v1',
         'checkin_requests',
@@ -268,6 +270,8 @@ export async function initEmergencyNotifications(): Promise<void> {
 
       if (notifee) {
         const legacyNotifeeChannels = [
+          'guardian_siren_channel_v2',
+          'guardian_checkin_channel_v2',
           'guardian_siren_channel_v1',
           'guardian_checkin_channel_v1',
           'emergency_alert_channel',

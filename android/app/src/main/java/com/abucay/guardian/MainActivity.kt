@@ -67,6 +67,15 @@ class MainActivity : ReactActivity() {
   }
 
   /**
+   * Statically reference raw sound resources so Android R8 / ProGuard never prune them.
+   */
+  @Suppress("UNUSED_VARIABLE")
+  private fun keepSoundResources() {
+    val _alert = R.raw.alert
+    val _notif = R.raw.notif
+  }
+
+  /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule
    * rendering of the component.
    */
