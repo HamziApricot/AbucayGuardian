@@ -8,13 +8,13 @@ export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
 export const NDRRMC_ALERT_CATEGORY = 'NDRRMC_ALERT_CATEGORY_V3';
 export const GUARDIAN_PERSISTENT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL';
 
-// Dedicated Channels & Sounds
-export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v1';
-export const EXPO_SIREN_CHANNEL_ID = 'guardian_siren_channel_v1';
+// Dedicated Channels & Sounds (Bumped to v2 to break any previous locked-sound caches)
+export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v2';
+export const EXPO_SIREN_CHANNEL_ID = 'guardian_siren_channel_v2';
 export const EMERGENCY_ALERT_SOUND = 'alert.mp3';
 
-export const NOTIFEE_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v1';
-export const EXPO_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v1';
+export const NOTIFEE_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v2';
+export const EXPO_CHECKIN_CHANNEL_ID = 'guardian_checkin_channel_v2';
 export const SAFETY_CHECK_SOUND = 'notif.mp3';
 
 // Backward compatibility aliases
@@ -215,36 +215,42 @@ export async function initEmergencyNotifications(): Promise<void> {
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
 
-      // Dedicated Maximum-Priority Channel for SOS & Loud Ping Siren (sound: alert.mp3)
-      await Notifications.setNotificationChannelAsync(EXPO_SIREN_CHANNEL_ID, {
-        name: '🚨 Emergency Siren & Loud Ping',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 800, 200, 800, 200, 1000, 300, 1000],
-        enableVibrate: true,
-        enableLights: true,
-        lightColor: '#DC2626',
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: true,
-        sound: EMERGENCY_ALERT_SOUND,
-        showBadge: true,
-      });
+      // ONLY create Expo emergency channels if Notifee native module is NOT present in this build.
+      // If Notifee is installed, Notifee exclusively manages the native sound channel to prevent
+      // expo-notifications and Notifee URI format conflicts from locking sound to default!
+      const notifee = getNotifee();
+      if (!notifee) {
+        await Notifications.setNotificationChannelAsync(EXPO_SIREN_CHANNEL_ID, {
+          name: '🚨 Emergency Siren & Loud Ping',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 800, 200, 800, 200, 1000, 300, 1000],
+          enableVibrate: true,
+          enableLights: true,
+          lightColor: '#DC2626',
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+          sound: EMERGENCY_ALERT_SOUND,
+          showBadge: true,
+        });
 
-      // Dedicated Maximum-Priority Channel for Safety Check-In Alerts (sound: notif.mp3)
-      await Notifications.setNotificationChannelAsync(EXPO_CHECKIN_CHANNEL_ID, {
-        name: '⚠️ Safety Check-In Alerts',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 500, 200, 500],
-        enableVibrate: true,
-        enableLights: true,
-        lightColor: '#2563EB',
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: true,
-        sound: SAFETY_CHECK_SOUND,
-        showBadge: true,
-      });
+        await Notifications.setNotificationChannelAsync(EXPO_CHECKIN_CHANNEL_ID, {
+          name: '⚠️ Safety Check-In Alerts',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 500, 200, 500],
+          enableVibrate: true,
+          enableLights: true,
+          lightColor: '#2563EB',
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+          sound: SAFETY_CHECK_SOUND,
+          showBadge: true,
+        });
+      }
 
-      // Clean up legacy cached channels that may lack heads-up popdown priority or custom sound
+      // Clean up legacy cached channels from previous builds so Android clears any locked system default sound
       const legacyExpoChannels = [
+        'guardian_siren_channel_v1',
+        'guardian_checkin_channel_v1',
         'checkin_requests',
         'loud_ping',
         'emergency_sos',
@@ -260,9 +266,10 @@ export async function initEmergencyNotifications(): Promise<void> {
         } catch {}
       }
 
-      const notifee = getNotifee();
       if (notifee) {
         const legacyNotifeeChannels = [
+          'guardian_siren_channel_v1',
+          'guardian_checkin_channel_v1',
           'emergency_alert_channel',
           'emergency_alert_v2',
           'emergency_alert_v3',
@@ -447,10 +454,41 @@ export async function triggerSOSNotification(
   senderName: string,
   lat?: number,
   lng?: number,
-  battery?: number
+  battery?: number | null
 ): Promise<void> {
+  Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000]);
+
+  const notifee = getNotifee();
+  if (notifee) {
+    try {
+      await notifee.displayNotification({
+        title: '🚨 EMERGENCY SOS ALERT!',
+        body: `${senderName} broadcasted an emergency SOS! Live coordinates and battery (${battery ? `${Math.round(battery * 100)}%` : 'Active'}) reported.`,
+        data: { type: 'sos', senderName, lat, lng },
+        android: {
+          channelId: NOTIFEE_SIREN_CHANNEL_ID,
+          sound: 'alert',
+          smallIcon: 'notification_icon',
+          color: '#DC2626',
+          importance: notifee.AndroidImportance?.HIGH ?? 4,
+          category: notifee.AndroidCategory?.ALARM ?? 'alarm',
+          visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
+          pressAction: { id: 'default', launchActivity: 'default' },
+        },
+        ios: {
+          critical: true,
+          criticalVolume: 1.0,
+          sound: EMERGENCY_ALERT_SOUND,
+        },
+      });
+      return;
+    } catch (e) {
+      console.warn('[NotificationService] Notifee SOS fallback:', e);
+    }
+  }
+
+  // Universal Fallback via expo-notifications
   try {
-    Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000]);
     await Notifications.scheduleNotificationAsync({
       content: {
         title: '🚨 EMERGENCY SOS ALERT!',
