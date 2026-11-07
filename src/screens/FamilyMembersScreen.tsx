@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -72,6 +73,19 @@ export default function FamilyMembersScreen({ navigation }: any) {
 
     useEffect(() => {
         if (!user?.id) return;
+
+        // Load cached members immediately so offline users see their family circle instantly
+        AsyncStorage.getItem('@abucay_cached_family_members').then((cached) => {
+            if (cached) {
+                try {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        setMembers(parsed);
+                        setLoading(false);
+                    }
+                } catch {}
+            }
+        });
 
         fetchMembers();
 
@@ -195,6 +209,9 @@ export default function FamilyMembersScreen({ navigation }: any) {
             });
 
             setMembers(resolvedMembers);
+            try {
+                AsyncStorage.setItem('@abucay_cached_family_members', JSON.stringify(resolvedMembers));
+            } catch {}
         } catch (e) {
             console.error('[FamilyMembers] fetchMembers error:', e);
         } finally {

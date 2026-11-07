@@ -29,3 +29,12 @@
 # Background Geolocation
 -keep class com.transistorsoft.locationmanager.** { *; }
 -dontwarn com.transistorsoft.locationmanager.**
+
+# Keep raw sound resources and drawables from shrinkResources / R8
+-keepclassmembers class **.R$raw {
+    public static <fields>;
+}
+-keepclassmembers class **.R$drawable {
+    public static <fields>;
+}
+

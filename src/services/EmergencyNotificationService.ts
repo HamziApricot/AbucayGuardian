@@ -7,8 +7,9 @@ export const GUARDIAN_QUICK_ACTIONS_CATEGORY = 'GUARDIAN_QUICK_ACTIONS_V2';
 export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
 export const NDRRMC_ALERT_CATEGORY = 'NDRRMC_ALERT_CATEGORY_V3';
 export const GUARDIAN_PERSISTENT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL';
-export const NDRRMC_EMERGENCY_CHANNEL_ID = 'ndrrmc_emergency_v5';
-export const NOTIFEE_EMERGENCY_CHANNEL_ID = 'emergency_alert_v3';
+export const NDRRMC_EMERGENCY_CHANNEL_ID = 'ndrrmc_emergency_v6';
+export const NOTIFEE_EMERGENCY_CHANNEL_ID = 'emergency_alert_v4';
+export const SOS_EMERGENCY_CHANNEL_ID = 'emergency_sos_v2';
 export const EMERGENCY_ALERT_SOUND = 'alert.mp3';
 
 /**
@@ -189,7 +190,7 @@ export async function initEmergencyNotifications(): Promise<void> {
       });
 
       // High-Priority Channel for SOS Alerts (Maximum Importance, uses alert.mp3)
-      await Notifications.setNotificationChannelAsync('emergency_sos', {
+      await Notifications.setNotificationChannelAsync(SOS_EMERGENCY_CHANNEL_ID, {
         name: '🚨 Emergency SOS Alerts',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 600, 200, 600, 200, 1000, 300, 1000],
@@ -205,8 +206,10 @@ export async function initEmergencyNotifications(): Promise<void> {
       try {
         await Notifications.deleteNotificationChannelAsync('checkin_requests');
         await Notifications.deleteNotificationChannelAsync('loud_ping');
+        await Notifications.deleteNotificationChannelAsync('emergency_sos');
         await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v3');
         await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v4');
+        await Notifications.deleteNotificationChannelAsync('ndrrmc_emergency_v5');
       } catch {}
 
       const notifee = getNotifee();
@@ -214,6 +217,7 @@ export async function initEmergencyNotifications(): Promise<void> {
         try {
           await notifee.deleteChannel('emergency_alert_channel');
           await notifee.deleteChannel('emergency_alert_v2');
+          await notifee.deleteChannel('emergency_alert_v3');
           await notifee.deleteChannel('emergency-check');
         } catch {}
       }
@@ -415,7 +419,7 @@ export async function triggerSOSNotification(
         categoryIdentifier: GUARDIAN_QUICK_ACTIONS_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
         data: { type: 'sos', senderName, lat, lng },
-        ...(Platform.OS === 'android' ? { channelId: 'emergency_sos' } : {}),
+        ...(Platform.OS === 'android' ? { channelId: SOS_EMERGENCY_CHANNEL_ID } : {}),
       },
       trigger: null, // immediate
     });
@@ -436,7 +440,7 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
       await notifee.requestPermission({ criticalAlert: true });
       const channelId = await notifee.createChannel({
         id: NOTIFEE_EMERGENCY_CHANNEL_ID,
-        name: 'Emergency Alerts V3',
+        name: '🚨 Emergency Alerts',
         importance: notifee.AndroidImportance?.HIGH ?? 4,
         visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
         bypassDnd: true,
@@ -545,7 +549,7 @@ export async function sendSafetyCheckNotification(
     try {
       const channelId = await notifee.createChannel({
         id: NOTIFEE_EMERGENCY_CHANNEL_ID,
-        name: 'Emergency Alerts V3',
+        name: '🚨 Emergency Alerts',
         importance: notifee.AndroidImportance?.HIGH ?? 4,
         visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
         bypassDnd: true,

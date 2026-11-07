@@ -141,7 +141,7 @@ export default function AppNavigator() {
             }
         };
 
-        if (session && userProfile) {
+        if (session) {
             checkOnboarding();
         } else {
             setPermissionsChecked(true);
@@ -150,7 +150,7 @@ export default function AppNavigator() {
 
     if (loading || !permissionsChecked) return null;
 
-    if (session && userProfile) {
+    if (session && (userProfile || permissionsOnboarded)) {
         if (!permissionsOnboarded) {
             return (
                 <PermissionsOnboardingScreen
