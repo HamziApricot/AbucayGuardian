@@ -1,0 +1,135 @@
+{
+  "expo": {
+    "name": "Abucay Guardian",
+    "slug": "abucay-guardian",
+    "scheme": "abucayguardian",
+    "version": "1.0.0",
+    "sdkVersion": "58.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0D1F4E"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.abucay.guardian",
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#0D1F4E"
+      },
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "fetch",
+          "processing"
+        ],
+        "NSLocationWhenInUseUsageDescription": "Your family circle needs your location to keep everyone updated in real-time.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Your family circle needs continuous background location to track safety even when the app is closed.",
+        "NSLocationAlwaysUsageDescription": "Your family circle needs continuous background location to track safety even when the app is closed.",
+        "NSMotionUsageDescription": "We use motion detection to preserve battery life when you are stationary.",
+        "NSCameraUsageDescription": "Abucay Guardian needs camera access to scan family pairing QR codes."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0D1F4E"
+      },
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#0D1F4E"
+      },
+      "package": "com.abucay.guardian",
+      "config": {
+        "googleMaps": {
+          "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
+        }
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "RECEIVE_BOOT_COMPLETED",
+        "ACTIVITY_RECOGNITION",
+        "WAKE_LOCK",
+        "VIBRATE",
+        "CAMERA",
+        "POST_NOTIFICATIONS",
+        "USE_FULL_SCREEN_INTENT",
+        "SCHEDULE_EXACT_ALARM",
+        "SYSTEM_ALERT_WINDOW",
+        "ACCESS_NOTIFICATION_POLICY",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.ACTIVITY_RECOGNITION",
+        "android.permission.WAKE_LOCK",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.ACCESS_NOTIFICATION_POLICY"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#E63946",
+          "sounds": [
+            "./assets/alert.mp3"
+          ]
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Abucay Guardian needs your location for the Family Tracker."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Abucay Guardian needs camera access to scan family pairing QR codes."
+        }
+      ],
+      "expo-font",
+      "react-native-background-geolocation",
+      "@maplibre/maplibre-react-native",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "imageWidth": 240,
+          "resizeMode": "cover",
+          "backgroundColor": "#0D1F4E"
+        }
+      ]
+    ],
+    "extra": {
+      "supabaseUrl": "https://vmunbhnmuuncaswpfqtc.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtdW5iaG5tdXVuY2Fzd3BmcXRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE5NzEzODksImV4cCI6MjA4NzU0NzM4OX0.bCY2V9aG8D0AFENiFTHQ3ozbgtCQcoXaMrkhf8n0T3A",
+      "eas": {
+        "projectId": "b40f7c08-9592-4a00-ab00-33b67efe2b1e"
+      }
+    },
+    "owner": "annaprimes-team"
+  }
+}
