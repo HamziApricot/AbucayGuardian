@@ -9,7 +9,15 @@ import AppNavigator from './src/navigation/AppNavigator';
 import { AlertProvider, useAlert } from './src/context/AlertContext';
 import { AlertManager } from './src/components/AlertManager';
 import { NDRRMCEmergencyModal, type NDRRMCEmergencyAlertData } from './src/components/NDRRMCEmergencyModal';
-import { initEmergencyNotifications, listenForEmergencyAlerts, showGuardianQuickActionsNotification, dismissGuardianQuickActionsNotification, registerNDRRMCModalHandler } from './src/services/EmergencyNotificationService';
+import {
+    initEmergencyNotifications,
+    listenForEmergencyAlerts,
+    stopEmergencyAlertMonitoring,
+    showGuardianQuickActionsNotification,
+    dismissGuardianQuickActionsNotification,
+    registerNDRRMCModalHandler,
+    requestOverlayAndBatteryPermissions,
+} from './src/services/EmergencyNotificationService';
 import { stopBackgroundLocationTracking } from './src/services/BackgroundLocationTask';
 import { navigationRef, navigateToNotificationTarget } from './src/services/NavigationService';
 import { supabase } from './src/lib/supabase';
@@ -130,9 +138,11 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         if (!user?.id) {
             dismissGuardianQuickActionsNotification();
+            stopEmergencyAlertMonitoring();
             return;
         }
         showGuardianQuickActionsNotification();
+        requestOverlayAndBatteryPermissions();
 
         const unsubscribe = listenForEmergencyAlerts(user.id, {
             onLoudPing: (fromName) => {

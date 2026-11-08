@@ -7,6 +7,11 @@ import {
   stopEmergencyAlarmAudio,
   isDndAccessGranted,
   openDndSettings,
+  isOverlayPermissionGranted,
+  openOverlaySettings,
+  isBatteryOptimizationIgnored,
+  openBatteryOptimizationSettings,
+  requestOverlayAndBatteryPermissions,
 } from './EmergencyAudioService';
 
 export {
@@ -14,6 +19,11 @@ export {
   stopEmergencyAlarmAudio,
   isDndAccessGranted,
   openDndSettings,
+  isOverlayPermissionGranted,
+  openOverlaySettings,
+  isBatteryOptimizationIgnored,
+  openBatteryOptimizationSettings,
+  requestOverlayAndBatteryPermissions,
 };
 
 export const GUARDIAN_QUICK_ACTIONS_CATEGORY = 'GUARDIAN_QUICK_ACTIONS_V2';
@@ -428,6 +438,58 @@ export async function initEmergencyNotifications(): Promise<void> {
  * Displays: "📍 Live Tracker", "🚨 Emergency SOS", "📞 Hotlines".
  */
 export async function showGuardianQuickActionsNotification(): Promise<void> {
+  // 1. Android Notifee Foreground Service (Prevents OS from killing app process when swiped closed)
+  const notifee = getNotifee();
+  if (notifee && Platform.OS === 'android') {
+    try {
+      const channelId = await notifee.createChannel({
+        id: 'guardian_controls',
+        name: '🛡️ Guardian Quick Controls',
+        importance: notifee.AndroidImportance?.LOW ?? 2,
+        visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
+      });
+
+      await notifee.displayNotification({
+        id: GUARDIAN_PERSISTENT_NOTIFICATION_ID,
+        title: '🛡️ Abucay Guardian • Live Protection',
+        subtitle: '🟢 24/7 Monitor Active',
+        body: '24/7 Emergency Protection Active • Tap quick controls below:',
+        android: {
+          channelId,
+          asForegroundService: true,
+          ongoing: true,
+          autoCancel: false,
+          smallIcon: 'notification_icon',
+          color: '#E63946',
+          importance: notifee.AndroidImportance?.LOW ?? 2,
+          pressAction: {
+            id: 'default',
+            launchActivity: 'default',
+          },
+          actions: [
+            {
+              title: '📍 Live Tracker',
+              pressAction: { id: 'ACTION_TRACKER', launchActivity: 'default' },
+            },
+            {
+              title: '🚨 Emergency SOS',
+              pressAction: { id: 'ACTION_SOS', launchActivity: 'default' },
+            },
+            {
+              title: '📞 Hotlines',
+              pressAction: { id: 'ACTION_HOTLINES', launchActivity: 'default' },
+            },
+          ],
+        },
+      });
+      console.log('[NotificationService] Notifee Foreground Service active (24/7 background listener protected)');
+      return;
+    } catch (e) {
+      console.warn('[NotificationService] Notifee foreground service fallback:', e);
+    }
+  }
+
+  // 2. Fallback via Expo Notifications
   try {
     try {
       await Notifications.dismissNotificationAsync(GUARDIAN_PERSISTENT_NOTIFICATION_ID);
@@ -450,16 +512,23 @@ export async function showGuardianQuickActionsNotification(): Promise<void> {
       },
       trigger: null,
     });
-    console.log('[NotificationService] Quick actions notification displayed');
+    console.log('[NotificationService] Quick actions notification displayed via Expo fallback');
   } catch (e) {
     console.warn('[NotificationService] Quick actions notification error:', e);
   }
 }
 
 /**
- * Dismisses the persistent quick actions notification when logging out.
+ * Dismisses the persistent quick actions notification / stops Foreground Service when logging out.
  */
 export async function dismissGuardianQuickActionsNotification(): Promise<void> {
+  const notifee = getNotifee();
+  if (notifee && Platform.OS === 'android') {
+    try {
+      await notifee.stopForegroundService();
+      await notifee.cancelNotification(GUARDIAN_PERSISTENT_NOTIFICATION_ID);
+    } catch {}
+  }
   try {
     await Notifications.dismissNotificationAsync(GUARDIAN_PERSISTENT_NOTIFICATION_ID);
   } catch (e) {
@@ -774,8 +843,32 @@ export interface EmergencyAlertCallbacks {
   onCheckInReply?: (fromName: string, isSafe: boolean) => void;
 }
 
+// Persistent singleton listeners: Keeps WebSocket alive inside Android Foreground Service
+let activeListeningUserId: string | null = null;
+let currentAlertCallbacks: EmergencyAlertCallbacks | null = null;
+let activeSosChannel: any = null;
+let activeBroadcastChannel: any = null;
+
 /**
- * Listens for incoming emergency alerts across the whole app (even in background).
+ * Tears down Supabase real-time channels when the user explicitly logs out.
+ */
+export function stopEmergencyAlertMonitoring(): void {
+  if (activeSosChannel) {
+    try { supabase.removeChannel(activeSosChannel); } catch {}
+    activeSosChannel = null;
+  }
+  if (activeBroadcastChannel) {
+    try { supabase.removeChannel(activeBroadcastChannel); } catch {}
+    activeBroadcastChannel = null;
+  }
+  activeListeningUserId = null;
+  currentAlertCallbacks = null;
+}
+
+/**
+ * Listens for incoming emergency alerts across the whole app.
+ * In conjunction with the Android Foreground Service, this listener stays connected
+ * and active 24/7 even when the app is swiped away from recent apps!
  */
 export function listenForEmergencyAlerts(
   currentUserId: string,
@@ -783,9 +876,25 @@ export function listenForEmergencyAlerts(
 ): () => void {
   if (!currentUserId) return () => {};
 
+  currentAlertCallbacks = callbacks || null;
+
+  // If already subscribed for this user, keep the live WebSocket channel running!
+  if (activeListeningUserId === currentUserId && activeSosChannel && activeBroadcastChannel) {
+    return () => {
+      currentAlertCallbacks = null;
+    };
+  }
+
+  // If switched user, clean up old channels
+  if (activeListeningUserId && activeListeningUserId !== currentUserId) {
+    stopEmergencyAlertMonitoring();
+  }
+
+  activeListeningUserId = currentUserId;
+
   // 1. Listen for new SOS events in Supabase database
-  const sosChannel = supabase
-    .channel('global-sos-listener')
+  activeSosChannel = supabase
+    .channel(`global-sos-${currentUserId}`)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'sos_events' },
@@ -807,8 +916,8 @@ export function listenForEmergencyAlerts(
     .subscribe();
 
   // 2. Listen for Realtime Broadcast events (Loud Ping, Check-in, SOS Broadcast)
-  const broadcastChannel = supabase
-    .channel('family-broadcast')
+  activeBroadcastChannel = supabase
+    .channel(`family-broadcast-${currentUserId}`)
     .on('broadcast', { event: 'loud_ping' }, (event) => {
       const payload = event.payload;
       if (!payload || payload.from_user_id === currentUserId) return;
@@ -822,7 +931,7 @@ export function listenForEmergencyAlerts(
       if (isTarget) {
         const sender = payload.from_name || 'Family Circle';
         triggerLoudPingNotification(sender);
-        callbacks?.onLoudPing?.(sender);
+        currentAlertCallbacks?.onLoudPing?.(sender);
         try {
           const deepUrl = `abucayguardian://emergency-alert?type=loud_ping&from=${encodeURIComponent(sender)}`;
           Linking.openURL(deepUrl).catch(() => {});
@@ -848,7 +957,7 @@ export function listenForEmergencyAlerts(
           payload.from_lat,
           payload.from_lng
         );
-        callbacks?.onCheckInRequest?.(
+        currentAlertCallbacks?.onCheckInRequest?.(
           sender,
           payload.from_avatar,
           payload.from_lat,
@@ -875,13 +984,14 @@ export function listenForEmergencyAlerts(
           },
           trigger: null,
         }).catch(() => {});
-        callbacks?.onCheckInReply?.(sender, true);
+        currentAlertCallbacks?.onCheckInReply?.(sender, true);
       }
     })
     .subscribe();
 
   return () => {
-    supabase.removeChannel(sosChannel);
+    // UI unmounted or navigated away: detach active UI callback, but keep the WebSocket connection alive 24/7!
+    currentAlertCallbacks = null;
   };
 }
 
