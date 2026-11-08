@@ -2,6 +2,19 @@ import { Platform, Vibration, Linking } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../lib/supabase';
 import { navigateToNotificationTarget } from './NavigationService';
+import {
+  playEmergencyAlarmAudio,
+  stopEmergencyAlarmAudio,
+  isDndAccessGranted,
+  openDndSettings,
+} from './EmergencyAudioService';
+
+export {
+  playEmergencyAlarmAudio,
+  stopEmergencyAlarmAudio,
+  isDndAccessGranted,
+  openDndSettings,
+};
 
 export const GUARDIAN_QUICK_ACTIONS_CATEGORY = 'GUARDIAN_QUICK_ACTIONS_V2';
 export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
@@ -290,6 +303,9 @@ export async function initEmergencyNotifications(): Promise<void> {
 
     // 3. Handle button clicks & notification interaction (both foreground and background actions)
     Notifications.addNotificationResponseReceivedListener(async (response) => {
+      // Silence alarm audio whenever user interacts with an alert notification
+      stopEmergencyAlarmAudio().catch(() => {});
+
       const actionId = response.actionIdentifier;
       const data = response.notification.request.content.data || {};
       console.log('[NotificationService] Action clicked:', actionId, data);
@@ -462,6 +478,9 @@ export async function triggerSOSNotification(
 ): Promise<void> {
   Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000]);
 
+  // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
+  playEmergencyAlarmAudio('alert', true).catch(() => {});
+
   const notifee = getNotifee();
   if (notifee) {
     try {
@@ -515,6 +534,9 @@ export async function triggerSOSNotification(
  * and pop up directly over the lock screen and minimized screen.
  */
 export async function triggerLoudPingNotification(fromName: string): Promise<void> {
+  // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
+  playEmergencyAlarmAudio('alert', false).catch(() => {});
+
   const notifee = getNotifee();
   if (notifee) {
     try {
@@ -623,6 +645,9 @@ export async function sendSafetyCheckNotification(
     (lat && lng
       ? `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=15&size=600x300&markers=${lat},${lng},ol-marker`
       : undefined);
+
+  // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
+  playEmergencyAlarmAudio('notif', false).catch(() => {});
 
   // 1. If @notifee/react-native native module is present in the build, use its full native power
   const notifee = getNotifee();

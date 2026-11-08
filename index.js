@@ -9,6 +9,10 @@ try {
   if (notifee && typeof notifee.onBackgroundEvent === 'function') {
     notifee.onBackgroundEvent(async ({ type, detail }) => {
       console.log('[Notifee HeadlessTask] Background event:', type, detail?.pressAction?.id);
+      try {
+        const { stopEmergencyAlarmAudio } = require('./src/services/EmergencyAudioService');
+        await stopEmergencyAlarmAudio();
+      } catch {}
     });
   }
 } catch (e) {

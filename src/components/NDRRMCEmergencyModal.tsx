@@ -11,6 +11,10 @@ import {
   Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  playEmergencyAlarmAudio,
+  stopEmergencyAlarmAudio,
+} from '../services/EmergencyAudioService';
 
 export interface NDRRMCEmergencyAlertData {
   alertType: 'loud_ping' | 'checkin';
@@ -42,7 +46,11 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
 
   useEffect(() => {
     if (visible) {
-      // 1. Continuous emergency siren vibration (alternating NDRRMC cadence)
+      // 1. Play hardware alarm audio (STREAM_ALARM - overrides Silent/Vibrate/DND)
+      const isLoud = alertData?.alertType === 'loud_ping';
+      playEmergencyAlarmAudio(isLoud ? 'alert' : 'notif', isLoud).catch(() => {});
+
+      // 2. Continuous emergency siren vibration (alternating NDRRMC cadence)
       // Pattern: wait 0ms, vibrate 600ms, wait 200ms, vibrate 600ms, wait 200ms, vibrate 1000ms
       Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000], true);
 
@@ -78,13 +86,15 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
       pulseLoop.start();
 
       return () => {
+        stopEmergencyAlarmAudio().catch(() => {});
         Vibration.cancel();
         pulseLoop.stop();
       };
     } else {
+      stopEmergencyAlarmAudio().catch(() => {});
       Vibration.cancel();
     }
-  }, [visible]);
+  }, [visible, alertData]);
 
   if (!visible || !alertData) return null;
 
@@ -93,16 +103,19 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   const subtitle = isLoudPing ? 'CRITICAL HIGH-VOLUME AUDIBLE ALERT' : 'URGENT SAFETY CHECK-IN REQUEST';
 
   const handleSafe = () => {
+    stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     onConfirmSafe();
   };
 
   const handleSOS = () => {
+    stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     onTriggerSOS();
   };
 
   const handleDismiss = () => {
+    stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     onDismiss();
   };
