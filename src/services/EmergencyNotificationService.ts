@@ -456,7 +456,6 @@ export async function showGuardianQuickActionsNotification(): Promise<void> {
         body: '24/7 Emergency Protection Active • Tap quick controls below:',
         android: {
           channelId,
-          asForegroundService: true,
           ongoing: true,
           autoCancel: false,
           smallIcon: 'notification_icon',
@@ -525,7 +524,6 @@ export async function dismissGuardianQuickActionsNotification(): Promise<void> {
   const notifee = getNotifee();
   if (notifee && Platform.OS === 'android') {
     try {
-      await notifee.stopForegroundService();
       await notifee.cancelNotification(GUARDIAN_PERSISTENT_NOTIFICATION_ID);
     } catch {}
   }

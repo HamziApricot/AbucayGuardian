@@ -10,15 +10,7 @@ class EmergencyAudioPackage : ReactPackage {
         return listOf(EmergencyAudioModule(reactContext))
     }
 
-    override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? {
-        return if (name == EmergencyAudioModule.NAME) {
-            EmergencyAudioModule(reactContext)
-        } else {
-            null
-        }
-    }
-
-    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<in Nothing, in Nothing>> {
         return emptyList()
     }
 }

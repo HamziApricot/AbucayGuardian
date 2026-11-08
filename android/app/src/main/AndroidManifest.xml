@@ -56,11 +56,6 @@
         <data android:scheme="abucayguardian"/>
       </intent-filter>
     </activity>
-    <service
-      android:name="app.notifee.core.ForegroundService"
-      android:foregroundServiceType="dataSync|location"
-      android:exported="false"
-      tools:replace="android:foregroundServiceType" />
     <uses-library android:name="org.apache.http.legacy" android:required="false"/>
   </application>
 </manifest>

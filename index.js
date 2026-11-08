@@ -15,16 +15,6 @@ try {
       } catch {}
     });
   }
-
-  // 2. Register Notifee Foreground Service runner (keeps JS runtime & Supabase WebSocket alive 24/7)
-  if (notifee && typeof notifee.registerForegroundService === 'function') {
-    notifee.registerForegroundService((notification) => {
-      return new Promise(() => {
-        // Deliberately non-resolving promise: Android keeps foreground service running 24/7
-        console.log('[Notifee ForegroundService] 24/7 Emergency Monitor is running in background');
-      });
-    });
-  }
 } catch (e) {
   // Notifee background event registration skipped in non-native environments
 }
