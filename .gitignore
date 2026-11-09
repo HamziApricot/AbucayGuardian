@@ -7,3 +7,5 @@ web-build/
 .env.*.local
 .eas/
 *.tsbuildinfo
+build/
+/ios
