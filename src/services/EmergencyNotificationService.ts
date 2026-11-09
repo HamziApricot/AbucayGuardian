@@ -915,7 +915,7 @@ export function listenForEmergencyAlerts(
 
   // 2. Listen for Realtime Broadcast events (Loud Ping, Check-in, SOS Broadcast)
   activeBroadcastChannel = supabase
-    .channel(`family-broadcast-${currentUserId}`)
+    .channel('family-broadcast')
     .on('broadcast', { event: 'loud_ping' }, (event) => {
       const payload = event.payload;
       if (!payload || payload.from_user_id === currentUserId) return;
