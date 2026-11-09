@@ -102,6 +102,14 @@ jobs:
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb') }}
           restore-keys: pods-${{ runner.os }}-
 
+      - name: Configure curl for reliable downloads
+        run: |
+          echo "--retry 5" >> ~/.curlrc
+          echo "--retry-delay 5" >> ~/.curlrc
+          echo "--retry-all-errors" >> ~/.curlrc
+          echo "--connect-timeout 30" >> ~/.curlrc
+          echo "--max-time 300" >> ~/.curlrc
+
       - name: Install CocoaPods dependencies
         working-directory: ios
         run: |
@@ -115,6 +123,7 @@ jobs:
           for attempt in 1 2 3; do
             $POD install && exit 0
             echo "pod install failed (attempt $attempt/3), retrying in 15s..."
+            pod cache clean --all || true
             sleep 15
           done
           exit 1
