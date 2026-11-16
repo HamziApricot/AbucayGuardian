@@ -29,8 +29,10 @@
         "UIBackgroundModes": [
           "location",
           "fetch",
-          "processing"
+          "processing",
+          "remote-notification"
         ],
+        "NSSupportsTimeSensitiveNotifications": true,
         "NSLocationWhenInUseUsageDescription": "Your family circle needs your location to keep everyone updated in real-time.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Your family circle needs continuous background location to track safety even when the app is closed.",
         "NSLocationAlwaysUsageDescription": "Your family circle needs continuous background location to track safety even when the app is closed.",

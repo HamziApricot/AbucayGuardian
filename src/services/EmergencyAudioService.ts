@@ -182,4 +182,69 @@ export async function requestOverlayAndBatteryPermissions(): Promise<void> {
   }
 }
 
+/**
+ * Minimizes the app to the background without finishing or destroying the Activity.
+ * Keeps all UI state and background tasks intact.
+ */
+export async function moveToBackground(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.moveToBackground !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.moveToBackground();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enables Android Screen Pinning / Lock Task (Kiosk) Mode.
+ * Prevents the user from closing the app, swiping away, accessing the Home button,
+ * or accessing System Settings to Force Stop the app.
+ */
+export async function startKioskMode(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.startKioskMode !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.startKioskMode();
+  } catch (e) {
+    console.warn('[EmergencyAudio] Failed to start Kiosk mode:', e);
+    return false;
+  }
+}
+
+/**
+ * Exits Android Lock Task Mode.
+ */
+export async function stopKioskMode(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.stopKioskMode !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.stopKioskMode();
+  } catch (e) {
+    console.warn('[EmergencyAudio] Failed to stop Kiosk mode:', e);
+    return false;
+  }
+}
+
+/**
+ * Checks whether Lock Task (Kiosk) Mode is currently running.
+ */
+export async function isKioskModeActive(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.isKioskModeActive !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.isKioskModeActive();
+  } catch {
+    return false;
+  }
+}
+
 

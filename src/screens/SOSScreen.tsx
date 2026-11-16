@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import * as Location from 'expo-location';
 import { queueSOSEvent } from '../utils/cache';
+import { sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
 
 import { useAlert } from '../context/AlertContext';
 
@@ -104,6 +105,52 @@ export default function SOSScreen({ navigation }: Props) {
         }
         if (error) {
             await queueSOSEvent(event);
+        }
+
+        // Broadcast strictly to active family members over family-broadcast channel
+        try {
+            let targetFamilyUserIds: string[] = [];
+            if (user?.id) {
+                const { data: familyData } = await supabase
+                    .from('family_members')
+                    .select('member_user_id')
+                    .eq('user_id', user.id);
+                if (familyData) {
+                    targetFamilyUserIds = familyData
+                        .map((m: any) => m.member_user_id)
+                        .filter(Boolean);
+                }
+            }
+
+            await supabase.channel('family-broadcast').send({
+                type: 'broadcast',
+                event: 'sos_alert',
+                payload: {
+                    from_user_id: user?.id,
+                    from_name: userProfile?.name || user?.user_metadata?.name || 'Family Member',
+                    from_avatar: userProfile?.avatar_url || null,
+                    lat,
+                    lng,
+                    target_family_user_ids: targetFamilyUserIds,
+                    triggered_at: new Date().toISOString(),
+                },
+            });
+
+            // Dispatch APNs / FCM push notification to wake closed apps & locked screens
+            if (targetFamilyUserIds.length > 0) {
+                sendEmergencyPushNotification(
+                    targetFamilyUserIds,
+                    '🚨 EMERGENCY SOS ALERT!',
+                    `${userProfile?.name || 'A family member'} broadcasted an emergency SOS! Tap to open live distress map.`,
+                    'sos',
+                    userProfile?.name || 'Family Member',
+                    lat,
+                    lng,
+                    null
+                ).catch(() => {});
+            }
+        } catch (e) {
+            console.warn('[SOSScreen] Broadcast SOS error:', e);
         }
 
         // Start continuous tracking while in "sent" phase

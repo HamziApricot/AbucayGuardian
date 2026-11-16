@@ -9,19 +9,22 @@ import {
   Vibration,
   Platform,
   Image,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   playEmergencyAlarmAudio,
   stopEmergencyAlarmAudio,
 } from '../services/EmergencyAudioService';
+import { dismissEmergencyAlertNotifications } from '../services/EmergencyNotificationService';
 
 export interface NDRRMCEmergencyAlertData {
-  alertType: 'loud_ping' | 'checkin';
+  alertType: 'loud_ping' | 'checkin' | 'sos';
   fromName: string;
   fromAvatar?: string | null;
   fromLat?: number;
   fromLng?: number;
+  battery?: number | null;
   timestamp?: string;
 }
 
@@ -30,6 +33,7 @@ interface NDRRMCEmergencyModalProps {
   alertData: NDRRMCEmergencyAlertData | null;
   onConfirmSafe: () => void;
   onTriggerSOS: () => void;
+  onViewTracker?: () => void;
   onDismiss: () => void;
 }
 
@@ -38,6 +42,7 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   alertData,
   onConfirmSafe,
   onTriggerSOS,
+  onViewTracker,
   onDismiss,
 }) => {
   // Pulsing siren beacon animation
@@ -47,7 +52,7 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   useEffect(() => {
     if (visible) {
       // 1. Play hardware alarm audio (STREAM_ALARM - overrides Silent/Vibrate/DND)
-      const isLoud = alertData?.alertType === 'loud_ping';
+      const isLoud = alertData?.alertType === 'loud_ping' || alertData?.alertType === 'sos';
       playEmergencyAlarmAudio(isLoud ? 'alert' : 'notif', isLoud).catch(() => {});
 
       // 2. Continuous emergency siren vibration (alternating NDRRMC cadence)
@@ -89,34 +94,70 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
         stopEmergencyAlarmAudio().catch(() => {});
         Vibration.cancel();
         pulseLoop.stop();
+        dismissEmergencyAlertNotifications().catch(() => {});
       };
     } else {
       stopEmergencyAlarmAudio().catch(() => {});
       Vibration.cancel();
+      dismissEmergencyAlertNotifications().catch(() => {});
     }
   }, [visible, alertData]);
 
   if (!visible || !alertData) return null;
 
+  const isSOS = alertData.alertType === 'sos';
   const isLoudPing = alertData.alertType === 'loud_ping';
-  const title = isLoudPing ? 'LOUD EMERGENCY PING' : 'ARE YOU SAFE?';
-  const subtitle = isLoudPing ? 'CRITICAL HIGH-VOLUME AUDIBLE ALERT' : 'URGENT SAFETY CHECK-IN REQUEST';
+  const isCheckIn = alertData.alertType === 'checkin';
+
+  const title = isSOS
+    ? 'EMERGENCY SOS DISTRESS'
+    : isLoudPing
+    ? 'LOUD EMERGENCY PING'
+    : 'ARE YOU SAFE?';
+
+  const subtitle = isSOS
+    ? 'CRITICAL LIFE DISTRESS • LIVE GPS TRANSMITTED'
+    : isLoudPing
+    ? 'CRITICAL HIGH-VOLUME AUDIBLE ALERT'
+    : 'URGENT SAFETY CHECK-IN REQUEST';
+
+  const hazardTag = isSOS ? '🚨 LIFE DISTRESS BEACON' : '⚠️ NDRRMC PROTOCOL';
+  const hazardTitle = isSOS ? 'EMERGENCY SOS ALERT' : 'EMERGENCY ALERT';
+  const hazardSub = isSOS ? 'LIFE SAFETY DISTRESS BROADCAST' : 'ABUCAY GUARDIAN SAFETY BROADCAST';
+
+  const sirenBg = isSOS ? '#B91C1C' : isLoudPing ? '#DC2626' : '#EA580C';
+  const glowBg = isSOS ? '#DC2626' : isLoudPing ? '#EF4444' : '#F97316';
+  const sirenIcon = isSOS ? 'warning' : isLoudPing ? 'volume-high' : 'alert-circle';
 
   const handleSafe = () => {
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
+    dismissEmergencyAlertNotifications().catch(() => {});
     onConfirmSafe();
   };
 
   const handleSOS = () => {
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
+    dismissEmergencyAlertNotifications().catch(() => {});
     onTriggerSOS();
+  };
+
+  const handleViewTracker = () => {
+    stopEmergencyAlarmAudio().catch(() => {});
+    Vibration.cancel();
+    dismissEmergencyAlertNotifications().catch(() => {});
+    if (onViewTracker) {
+      onViewTracker();
+    } else {
+      onDismiss();
+    }
   };
 
   const handleDismiss = () => {
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
+    dismissEmergencyAlertNotifications().catch(() => {});
     onDismiss();
   };
 
@@ -129,19 +170,19 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
       onRequestClose={handleDismiss}
     >
       <View style={styles.overlay}>
-        <View style={styles.alertCard}>
+        <View style={[styles.alertCard, isSOS && styles.alertCardSOS]}>
           {/* Header Hazard Banner (NDRRMC Style) */}
-          <View style={styles.hazardHeader}>
+          <View style={[styles.hazardHeader, isSOS && styles.hazardHeaderSOS]}>
             <View style={styles.hazardTopRow}>
-              <View style={styles.hazardTag}>
-                <Text style={styles.hazardTagText}>⚠️ NDRRMC PROTOCOL</Text>
+              <View style={[styles.hazardTag, isSOS && styles.hazardTagSOS]}>
+                <Text style={styles.hazardTagText}>{hazardTag}</Text>
               </View>
               <Text style={styles.hazardTime}>
                 {alertData.timestamp || 'CRITICAL PRIORITY'}
               </Text>
             </View>
-            <Text style={styles.hazardMainTitle}>EMERGENCY ALERT</Text>
-            <Text style={styles.hazardSubTitle}>ABUCAY GUARDIAN SAFETY BROADCAST</Text>
+            <Text style={styles.hazardMainTitle}>{hazardTitle}</Text>
+            <Text style={styles.hazardSubTitle}>{hazardSub}</Text>
           </View>
 
           {/* Main Content Area */}
@@ -154,18 +195,18 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
                   {
                     transform: [{ scale: pulseAnim }],
                     opacity: glowAnim,
-                    backgroundColor: isLoudPing ? '#EF4444' : '#F97316',
+                    backgroundColor: glowBg,
                   },
                 ]}
               />
               <View
                 style={[
                   styles.sirenCenterCircle,
-                  { backgroundColor: isLoudPing ? '#DC2626' : '#EA580C' },
+                  { backgroundColor: sirenBg },
                 ]}
               >
                 <Ionicons
-                  name={isLoudPing ? 'volume-high' : 'alert-circle'}
+                  name={sirenIcon as any}
                   size={36}
                   color="#FFFFFF"
                 />
@@ -174,31 +215,53 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
 
             {/* Alert Headings */}
             <Text style={styles.alertHeadline}>{title}</Text>
-            <Text style={styles.alertSubHeadline}>{subtitle}</Text>
+            <Text style={[styles.alertSubHeadline, isSOS && { color: '#F87171' }]}>{subtitle}</Text>
 
             {/* Sender Identification Card */}
-            <View style={styles.senderCard}>
+            <View style={[styles.senderCard, isSOS && styles.senderCardSOS]}>
               {alertData.fromAvatar ? (
                 <Image source={{ uri: alertData.fromAvatar }} style={styles.senderAvatar} />
               ) : (
-                <View style={styles.senderAvatarFallback}>
+                <View style={[styles.senderAvatarFallback, isSOS && { backgroundColor: '#DC2626' }]}>
                   <Text style={styles.senderInitial}>
                     {alertData.fromName.charAt(0).toUpperCase()}
                   </Text>
                 </View>
               )}
               <View style={styles.senderInfo}>
-                <Text style={styles.senderFromLabel}>REQUESTED BY</Text>
+                <Text style={styles.senderFromLabel}>
+                  {isSOS ? 'DISTRESS SIGNAL FROM' : 'REQUESTED BY'}
+                </Text>
                 <Text style={styles.senderName}>{alertData.fromName}</Text>
-                <Text style={styles.senderRole}>Verified Family Circle Member</Text>
+                <Text style={[styles.senderRole, isSOS && { color: '#F87171' }]}>
+                  {isSOS ? 'Family Circle • Urgent Distress' : 'Verified Family Circle Member'}
+                </Text>
+                {(alertData.fromLat !== undefined && alertData.fromLng !== undefined) && (
+                  <View style={styles.senderCoordsRow}>
+                    <Ionicons name="location-sharp" size={13} color="#EF4444" />
+                    <Text style={styles.senderCoordsText}>
+                      GPS: {alertData.fromLat.toFixed(4)}, {alertData.fromLng.toFixed(4)}
+                      {alertData.battery !== undefined && alertData.battery !== null
+                        ? ` • 🔋 ${Math.round(alertData.battery * 100)}%`
+                        : ''}
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
 
             {/* Emergency Warning Notice Box */}
-            <View style={styles.warningNoticeBox}>
-              <Ionicons name="information-circle" size={20} color="#F59E0B" style={styles.noticeIcon} />
-              <Text style={styles.warningNoticeText}>
-                {isLoudPing
+            <View style={[styles.warningNoticeBox, isSOS && styles.warningNoticeBoxSOS]}>
+              <Ionicons
+                name={isSOS ? 'warning' : 'information-circle'}
+                size={20}
+                color={isSOS ? '#EF4444' : '#F59E0B'}
+                style={styles.noticeIcon}
+              />
+              <Text style={[styles.warningNoticeText, isSOS && styles.warningNoticeTextSOS]}>
+                {isSOS
+                  ? `🚨 ${alertData.fromName} broadcasted an EMERGENCY SOS DISTRESS ALERT! Live coordinates and battery status have been reported. Check on them immediately or call emergency dispatch.`
+                  : isLoudPing
                   ? `${alertData.fromName} triggered an urgent alarm on your device. Please verify you are safe immediately.`
                   : `${alertData.fromName} is requesting your real-time safety status. Tap below to confirm you are safe.`}
               </Text>
@@ -206,31 +269,68 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
 
             {/* Action Buttons */}
             <View style={styles.actionsContainer}>
-              {/* Primary: I Am Safe */}
-              <TouchableOpacity
-                style={styles.safeButton}
-                onPress={handleSafe}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="shield-checkmark" size={24} color="#FFFFFF" />
-                <View style={styles.btnTextContainer}>
-                  <Text style={styles.safeButtonText}>I AM SAFE</Text>
-                  <Text style={styles.safeButtonSub}>Confirm status • Stop alarm</Text>
-                </View>
-              </TouchableOpacity>
+              {isSOS ? (
+                <>
+                  {/* Primary SOS Action: View on Live Tracker */}
+                  <TouchableOpacity
+                    style={styles.trackerButton}
+                    onPress={handleViewTracker}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="location" size={24} color="#FFFFFF" />
+                    <View style={styles.btnTextContainer}>
+                      <Text style={styles.trackerButtonText}>VIEW ON LIVE TRACKER</Text>
+                      <Text style={styles.trackerButtonSub}>Track coordinates • Open live map</Text>
+                    </View>
+                  </TouchableOpacity>
 
-              {/* Secondary Emergency: Need Help (SOS) */}
-              <TouchableOpacity
-                style={styles.sosButton}
-                onPress={handleSOS}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="alert-circle" size={22} color="#FFFFFF" />
-                <View style={styles.btnTextContainer}>
-                  <Text style={styles.sosButtonText}>NEED HELP (TRIGGER SOS)</Text>
-                  <Text style={styles.sosButtonSub}>Broadcast emergency distress</Text>
-                </View>
-              </TouchableOpacity>
+                  {/* Secondary SOS Action: Call 911 Emergency */}
+                  <TouchableOpacity
+                    style={styles.sosButton}
+                    onPress={() => {
+                      stopEmergencyAlarmAudio().catch(() => {});
+                      Vibration.cancel();
+                      dismissEmergencyAlertNotifications().catch(() => {});
+                      Linking.openURL('tel:911').catch(() => {});
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="call" size={22} color="#FFFFFF" />
+                    <View style={styles.btnTextContainer}>
+                      <Text style={styles.sosButtonText}>CALL 911 EMERGENCY</Text>
+                      <Text style={styles.sosButtonSub}>Direct emergency hotline dispatch</Text>
+                    </View>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {/* Primary: I Am Safe */}
+                  <TouchableOpacity
+                    style={styles.safeButton}
+                    onPress={handleSafe}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="shield-checkmark" size={24} color="#FFFFFF" />
+                    <View style={styles.btnTextContainer}>
+                      <Text style={styles.safeButtonText}>I AM SAFE</Text>
+                      <Text style={styles.safeButtonSub}>Confirm status • Stop alarm</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Secondary Emergency: Need Help (SOS) */}
+                  <TouchableOpacity
+                    style={styles.sosButton}
+                    onPress={handleSOS}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="alert-circle" size={22} color="#FFFFFF" />
+                    <View style={styles.btnTextContainer}>
+                      <Text style={styles.sosButtonText}>NEED HELP (TRIGGER SOS)</Text>
+                      <Text style={styles.sosButtonSub}>Broadcast emergency distress</Text>
+                    </View>
+                  </TouchableOpacity>
+                </>
+              )}
 
               {/* Dismiss / Silence Button */}
               <TouchableOpacity
@@ -502,6 +602,64 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     marginLeft: 6,
+  },
+  alertCardSOS: {
+    borderColor: '#EF4444',
+    shadowColor: '#EF4444',
+  },
+  hazardHeaderSOS: {
+    backgroundColor: '#B91C1C',
+    borderBottomColor: '#7F1D1D',
+  },
+  hazardTagSOS: {
+    backgroundColor: '#450A0A',
+  },
+  senderCardSOS: {
+    borderColor: '#7F1D1D',
+    backgroundColor: '#1E1B2E',
+  },
+  senderCoordsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 4,
+  },
+  senderCoordsText: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  warningNoticeBoxSOS: {
+    backgroundColor: 'rgba(220, 38, 38, 0.16)',
+    borderColor: 'rgba(239, 68, 68, 0.45)',
+  },
+  warningNoticeTextSOS: {
+    color: '#FECACA',
+  },
+  trackerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2563EB',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  trackerButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  trackerButtonSub: {
+    color: '#DBEAFE',
+    fontSize: 11,
+    fontWeight: '600',
   },
 });
 

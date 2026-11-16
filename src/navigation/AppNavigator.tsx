@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext';
 // Auth Screens
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
+import PhoneAuthScreen from '../screens/PhoneAuthScreen';
 
 // Permissions Onboarding Screen
 import PermissionsOnboardingScreen from '../screens/PermissionsOnboardingScreen';
@@ -120,6 +121,7 @@ function AuthStack() {
         <Stack.Navigator screenOptions={{ headerShown: false }}>
             <Stack.Screen name="Login" component={LoginScreen} />
             <Stack.Screen name="Register" component={RegisterScreen} />
+            <Stack.Screen name="PhoneAuth" component={PhoneAuthScreen} />
         </Stack.Navigator>
     );
 }

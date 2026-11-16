@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import type { FamilyMember3D } from './FamilyMap3D';
 import { triggerTestNDRRMCAlert } from '../services/EmergencyNotificationService';
+import { formatFromAgo } from '../utils/tracking';
 
 interface FamilyActionSheetProps {
   member: FamilyMember3D & {
@@ -166,12 +167,12 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
               />
               <Text style={styles.headerStatusText}>
                 {isSelf
-                  ? `Battery ${userBattery > 0 ? `${Math.round(userBattery * 100)}%` : 'Active'} • Live GPS (±${Math.round(member.accuracy || 5)}m)`
-                  : isOnline
-                  ? `Online${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel * 100)}% battery` : ''} • ${
+                  ? `Battery ${userBattery > 0 ? `${Math.round(userBattery > 1 ? userBattery : userBattery * 100)}%` : 'Active'} • Live GPS (±${Math.round(member.accuracy || 5)}m)`
+                  : isOnline && isLocalOnline
+                  ? `Online${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}% battery` : ''} • ${
                       member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h` : 'Stationary'
                     } • ±${Math.round(member.accuracy || 5)}m GPS`
-                  : `Offline • Last known: ${member.lastUpdated ? new Date(member.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown'}`}
+                  : `Offline • Last known ${formatFromAgo(member.lastUpdated)}`}
               </Text>
             </View>
           </View>
@@ -274,6 +275,95 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
               <Text style={styles.gridActionSub}>Ring at max volume</Text>
             </TouchableOpacity>
           </View>
+
+          {/* Action 5: Live Member Telemetry & Info Card */}
+          <View style={styles.telemetryCard}>
+            <View style={styles.telemetryHeader}>
+              <Ionicons name="shield-checkmark" size={15} color={Colors.primary} />
+              <Text style={styles.telemetryTitle}>Live Device Telemetry & Info</Text>
+            </View>
+
+            <View style={styles.telemetryGrid}>
+              {/* Battery Percentage */}
+              <View style={styles.telemetryItem}>
+                <Ionicons
+                  name={
+                    member.batteryLevel == null ? 'battery-charging-outline' :
+                    member.batteryLevel <= 0.2 ? 'battery-dead' :
+                    member.batteryLevel <= 0.5 ? 'battery-half' : 'battery-full'
+                  }
+                  size={18}
+                  color={
+                    member.batteryLevel == null ? Colors.textMuted :
+                    member.batteryLevel <= 0.2 ? '#EF4444' :
+                    member.batteryLevel <= 0.5 ? '#D97706' : '#10B981'
+                  }
+                />
+                <View style={styles.telemetryTextCol}>
+                  <Text style={styles.telemetryLabel}>Battery</Text>
+                  <Text style={[
+                    styles.telemetryValue,
+                    member.batteryLevel != null && member.batteryLevel <= 0.2 && { color: '#EF4444' }
+                  ]}>
+                    {member.batteryLevel != null && member.batteryLevel >= 0
+                      ? `${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%`
+                      : 'Unknown'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Active Status */}
+              <View style={styles.telemetryItem}>
+                <View style={[styles.telemetryDot, { backgroundColor: isOnline && isLocalOnline ? '#22C55E' : '#94A3B8' }]} />
+                <View style={styles.telemetryTextCol}>
+                  <Text style={styles.telemetryLabel}>Active Status</Text>
+                  <Text style={[styles.telemetryValue, { color: isOnline && isLocalOnline ? '#16A34A' : Colors.textMuted }]}>
+                    {isOnline && isLocalOnline ? 'Active Now' : formatFromAgo(member.lastUpdated)}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Movement Speed */}
+              <View style={styles.telemetryItem}>
+                <Ionicons name="speedometer-outline" size={18} color="#2563EB" />
+                <View style={styles.telemetryTextCol}>
+                  <Text style={styles.telemetryLabel}>Speed</Text>
+                  <Text style={styles.telemetryValue}>
+                    {member.speed && member.speed > 0.8
+                      ? `${Math.round(member.speed * 3.6)} km/h`
+                      : 'Stationary'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* GPS Accuracy */}
+              <View style={styles.telemetryItem}>
+                <Ionicons name="locate-outline" size={18} color="#7C3AED" />
+                <View style={styles.telemetryTextCol}>
+                  <Text style={styles.telemetryLabel}>Accuracy</Text>
+                  <Text style={styles.telemetryValue}>
+                    ±{Math.round(member.accuracy || 5)}m
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Coordinates & Phone row */}
+            <View style={styles.telemetryFooter}>
+              <View style={styles.telemetryFooterRow}>
+                <Ionicons name="location-sharp" size={13} color={Colors.textMuted} />
+                <Text style={styles.telemetryFooterText}>
+                  {member.latitude.toFixed(4)}, {member.longitude.toFixed(4)}
+                </Text>
+              </View>
+              {memberPhone ? (
+                <View style={styles.telemetryFooterRow}>
+                  <Ionicons name="call" size={13} color={Colors.textMuted} />
+                  <Text style={styles.telemetryFooterText}>{memberPhone}</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
         </View>
       ) : (
         /* ========================================================================= */
@@ -373,11 +463,20 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
 
             <View style={styles.testBtnRow}>
               <TouchableOpacity
+                style={[styles.testBtn, { backgroundColor: '#B91C1C' }]}
+                onPress={() => triggerTestNDRRMCAlert('sos', 0, 'Self Test (Emergency SOS)')}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="warning" size={14} color="#FFFFFF" />
+                <Text style={styles.testBtnText}>SOS Alert</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={[styles.testBtn, { backgroundColor: '#DC2626' }]}
                 onPress={() => triggerTestNDRRMCAlert('loud_ping', 0, 'Self Test (Loud Ping)')}
                 activeOpacity={0.8}
               >
-                <Ionicons name="volume-high" size={15} color="#FFFFFF" />
+                <Ionicons name="volume-high" size={14} color="#FFFFFF" />
                 <Text style={styles.testBtnText}>Loud Ping</Text>
               </TouchableOpacity>
 
@@ -386,7 +485,7 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
                 onPress={() => triggerTestNDRRMCAlert('checkin', 0, 'Self Test (Check-In)')}
                 activeOpacity={0.8}
               >
-                <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
+                <Ionicons name="shield-checkmark" size={14} color="#FFFFFF" />
                 <Text style={styles.testBtnText}>Are You Safe?</Text>
               </TouchableOpacity>
 
@@ -395,13 +494,17 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
                 onPress={() => {
                   Alert.alert(
                     '⏱️ 5-Second Test Armed',
-                    'Minimize the app or lock your phone NOW!\n\nThe NDRRMC emergency alert will fire in 5 seconds with siren vibration and heads-up banner.',
-                    [{ text: 'Start 5s Countdown', onPress: () => triggerTestNDRRMCAlert('loud_ping', 5, 'NDRRMC / Test Alert') }]
+                    'Choose an emergency alert to test, then minimize the app or lock your phone NOW!\n\nThe NDRRMC emergency popup will fire in 5 seconds with siren and heads-up banner.',
+                    [
+                      { text: '🚨 SOS Alert (5s)', onPress: () => triggerTestNDRRMCAlert('sos', 5, 'Family Circle (Test SOS)') },
+                      { text: '🔊 Loud Ping (5s)', onPress: () => triggerTestNDRRMCAlert('loud_ping', 5, 'NDRRMC / Test Alert') },
+                      { text: 'Cancel', style: 'cancel' }
+                    ]
                   );
                 }}
                 activeOpacity={0.8}
               >
-                <Ionicons name="timer-outline" size={15} color="#FFFFFF" />
+                <Ionicons name="timer-outline" size={14} color="#FFFFFF" />
                 <Text style={styles.testBtnText}>Lock Phone (5s)</Text>
               </TouchableOpacity>
             </View>
@@ -767,15 +870,17 @@ const styles = StyleSheet.create({
   },
   testBtnRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 6,
   },
   testBtn: {
+    minWidth: '47%',
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
     borderRadius: 8,
     gap: 4,
   },
@@ -797,6 +902,85 @@ const styles = StyleSheet.create({
     color: '#93C5FD',
     fontSize: 10.5,
     flex: 1,
+  },
+  /* Telemetry & Info Card */
+  telemetryCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: BorderRadius.lg,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginTop: 4,
+  },
+  telemetryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  telemetryTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#334155',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  telemetryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  telemetryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    width: '48%',
+    flexGrow: 1,
+  },
+  telemetryDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  telemetryTextCol: {
+    flex: 1,
+  },
+  telemetryLabel: {
+    fontSize: 9,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  telemetryValue: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  telemetryFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  telemetryFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  telemetryFooterText: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '600',
   },
 });
 

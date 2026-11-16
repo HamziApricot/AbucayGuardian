@@ -231,10 +231,10 @@ const AnimatedFamilyMarker: React.FC<{
             </View>
             <Text style={styles.metaText}>
               {isSelf
-                ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
+                ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
                 : status.isActive
-                  ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
-                  : `Inactive • ${status.timeAgo}`}
+                  ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
+                  : `Offline • ${status.fromAgo}`}
             </Text>
           </Animated.View>
         )}

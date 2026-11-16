@@ -13,6 +13,12 @@ try {
         const { stopEmergencyAlarmAudio } = require('./src/services/EmergencyAudioService');
         await stopEmergencyAlarmAudio();
       } catch {}
+      try {
+        const notifId = detail?.notification?.id;
+        if (notifId && notifId !== 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL') {
+          await notifee.cancelNotification(notifId);
+        }
+      } catch {}
     });
   }
 } catch (e) {

@@ -28,7 +28,7 @@ export default function ProfileScreen() {
     const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
     const handleSave = async () => {
-        if (!name || !phone) {
+        if (!name.trim() || !phone.trim()) {
             showAlert({
                 title: 'Missing Fields',
                 message: 'Name and phone are required.',
@@ -37,11 +37,62 @@ export default function ProfileScreen() {
             return;
         }
         setSaving(true);
-        const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
-        await supabase.from('users').update({ name, phone: fullPhone, updated_at: new Date().toISOString() }).eq('id', user?.id);
-        await refreshProfile();
-        setSaving(false);
-        setEditing(false);
+        try {
+            const trimmedName = name.trim();
+            const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
+            const nowIso = new Date().toISOString();
+
+            // 1. Update personal row in users table
+            const { error: userUpdateError } = await supabase
+                .from('users')
+                .update({ name: trimmedName, phone: fullPhone, updated_at: nowIso })
+                .eq('id', user?.id);
+
+            if (userUpdateError) throw userUpdateError;
+
+            // 2. Sync to all paired family_members rows so linked relatives see updated personal info immediately
+            if (user?.id) {
+                try {
+                    await supabase
+                        .from('family_members')
+                        .update({ name: trimmedName, phone: fullPhone })
+                        .eq('member_user_id', user.id);
+                } catch (fmErr) {
+                    console.warn('[ProfileScreen] sync to family_members non-fatal:', fmErr);
+                }
+
+                // 3. Sync name to Auth user metadata
+                try {
+                    await supabase.auth.updateUser({ data: { name: trimmedName } });
+                } catch {}
+
+                // 4. Realtime broadcast to all active family members' devices (0ms instant update)
+                try {
+                    await supabase.channel('family-broadcast').send({
+                        type: 'broadcast',
+                        event: 'profile_updated',
+                        payload: {
+                            user_id: user.id,
+                            name: trimmedName,
+                            phone: fullPhone,
+                            avatar_url: userProfile?.avatar_url,
+                        },
+                    });
+                } catch {}
+            }
+
+            await refreshProfile();
+            showToast({ message: 'Profile updated successfully!', type: 'success' });
+            setEditing(false);
+        } catch (err: any) {
+            showAlert({
+                title: 'Update Failed',
+                message: err.message || 'Could not update profile.',
+                type: 'error',
+            });
+        } finally {
+            setSaving(false);
+        }
     };
 
     const uploadAvatar = async () => {
@@ -80,9 +131,35 @@ export default function ProfileScreen() {
                     .from('avatars')
                     .getPublicUrl(filePath);
 
-                await supabase.from('users').update({ avatar_url: publicUrlData.publicUrl }).eq('id', user.id);
+                const newAvatarUrl = publicUrlData.publicUrl;
+
+                // 1. Update personal users row
+                await supabase.from('users').update({ avatar_url: newAvatarUrl }).eq('id', user.id);
+
+                // 2. Sync avatar to paired family members' lists
+                try {
+                    await supabase
+                        .from('family_members')
+                        .update({ avatar_url: newAvatarUrl })
+                        .eq('member_user_id', user.id);
+                } catch {}
+
+                // 3. Realtime broadcast to peers
+                try {
+                    await supabase.channel('family-broadcast').send({
+                        type: 'broadcast',
+                        event: 'profile_updated',
+                        payload: {
+                            user_id: user.id,
+                            name: userProfile?.name,
+                            phone: userProfile?.phone,
+                            avatar_url: newAvatarUrl,
+                        },
+                    });
+                } catch {}
 
                 await refreshProfile();
+                showToast({ message: 'Profile picture updated!', type: 'success' });
                 setUploadingAvatar(false);
             }
         } catch (error: any) {
@@ -101,7 +178,30 @@ export default function ProfileScreen() {
         setUploadingAvatar(true);
         try {
             await supabase.from('users').update({ avatar_url: null }).eq('id', user.id);
+
+            // Sync removal to family members and broadcast
+            try {
+                await supabase
+                    .from('family_members')
+                    .update({ avatar_url: null })
+                    .eq('member_user_id', user.id);
+            } catch {}
+
+            try {
+                await supabase.channel('family-broadcast').send({
+                    type: 'broadcast',
+                    event: 'profile_updated',
+                    payload: {
+                        user_id: user.id,
+                        name: userProfile?.name,
+                        phone: userProfile?.phone,
+                        avatar_url: null,
+                    },
+                });
+            } catch {}
+
             await refreshProfile();
+            showToast({ message: 'Profile picture removed.', type: 'info' });
         } catch (error: any) {
             showAlert({
                 title: 'Failed to remove avatar',

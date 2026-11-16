@@ -1,4 +1,5 @@
 import { Platform, Vibration, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../lib/supabase';
 import { navigateToNotificationTarget } from './NavigationService';
@@ -12,6 +13,10 @@ import {
   isBatteryOptimizationIgnored,
   openBatteryOptimizationSettings,
   requestOverlayAndBatteryPermissions,
+  moveToBackground,
+  startKioskMode,
+  stopKioskMode,
+  isKioskModeActive,
 } from './EmergencyAudioService';
 
 export {
@@ -24,12 +29,17 @@ export {
   isBatteryOptimizationIgnored,
   openBatteryOptimizationSettings,
   requestOverlayAndBatteryPermissions,
+  moveToBackground,
+  startKioskMode,
+  stopKioskMode,
+  isKioskModeActive,
 };
 
 export const GUARDIAN_QUICK_ACTIONS_CATEGORY = 'GUARDIAN_QUICK_ACTIONS_V2';
 export const SAFETY_CHECK_CATEGORY = 'SAFETY_CHECK_CATEGORY_V2';
 export const NDRRMC_ALERT_CATEGORY = 'NDRRMC_ALERT_CATEGORY_V3';
 export const GUARDIAN_PERSISTENT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL';
+export const EMERGENCY_ALERT_NOTIFICATION_ID = 'ABUCAY_GUARDIAN_EMERGENCY_ALERT';
 
 // Dedicated Channels & Sounds (Bumped to v3 to break any previous locked-sound caches)
 export const NOTIFEE_SIREN_CHANNEL_ID = 'guardian_siren_channel_v3';
@@ -94,9 +104,9 @@ export function registerNDRRMCModalHandler(handler: ((data: any) => void) | null
  */
 export async function initEmergencyNotifications(): Promise<void> {
   try {
-    // 0. Dismiss any orphan/stale notifications from previous app sessions
+    // 0. Dismiss any orphan/stale notifications from previous app sessions (keeps persistent service intact)
     try {
-      await Notifications.dismissAllNotificationsAsync();
+      await dismissEmergencyAlertNotifications();
     } catch {}
 
     const { status } = await Notifications.requestPermissionsAsync({
@@ -104,6 +114,8 @@ export async function initEmergencyNotifications(): Promise<void> {
         allowAlert: true,
         allowBadge: true,
         allowSound: true,
+        allowDisplayInCarPlay: true,
+        provideAppNotificationSettings: true,
       },
     });
 
@@ -238,37 +250,33 @@ export async function initEmergencyNotifications(): Promise<void> {
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
 
-      // ONLY create Expo emergency channels if Notifee native module is NOT present in this build.
-      // If Notifee is installed, Notifee exclusively manages the native sound channel to prevent
-      // expo-notifications and Notifee URI format conflicts from locking sound to default!
-      const notifee = getNotifee();
-      if (!notifee) {
-        await Notifications.setNotificationChannelAsync(EXPO_SIREN_CHANNEL_ID, {
-          name: '🚨 Emergency Siren & Loud Ping',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 800, 200, 800, 200, 1000, 300, 1000],
-          enableVibrate: true,
-          enableLights: true,
-          lightColor: '#DC2626',
-          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-          bypassDnd: true,
-          sound: EMERGENCY_ALERT_SOUND,
-          showBadge: true,
-        });
+      // Always ensure Expo emergency channels exist in Android NotificationManager
+      // so fallback Notifications.scheduleNotificationAsync never fails with missing channel errors!
+      await Notifications.setNotificationChannelAsync(EXPO_SIREN_CHANNEL_ID, {
+        name: '🚨 Emergency Siren & Loud Ping',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 800, 200, 800, 200, 1000, 300, 1000],
+        enableVibrate: true,
+        enableLights: true,
+        lightColor: '#DC2626',
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+        sound: EMERGENCY_ALERT_SOUND,
+        showBadge: true,
+      });
 
-        await Notifications.setNotificationChannelAsync(EXPO_CHECKIN_CHANNEL_ID, {
-          name: '⚠️ Safety Check-In Alerts',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 500, 200, 500],
-          enableVibrate: true,
-          enableLights: true,
-          lightColor: '#2563EB',
-          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-          bypassDnd: true,
-          sound: SAFETY_CHECK_SOUND,
-          showBadge: true,
-        });
-      }
+      await Notifications.setNotificationChannelAsync(EXPO_CHECKIN_CHANNEL_ID, {
+        name: '⚠️ Safety Check-In Alerts',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 200, 500],
+        enableVibrate: true,
+        enableLights: true,
+        lightColor: '#2563EB',
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+        sound: SAFETY_CHECK_SOUND,
+        showBadge: true,
+      });
 
       // Clean up legacy cached channels from previous builds so Android clears any locked system default sound
       const legacyExpoChannels = [
@@ -315,6 +323,13 @@ export async function initEmergencyNotifications(): Promise<void> {
     Notifications.addNotificationResponseReceivedListener(async (response) => {
       // Silence alarm audio whenever user interacts with an alert notification
       stopEmergencyAlarmAudio().catch(() => {});
+
+      // Dismiss the notification that was interacted with if not persistent control
+      const notifId = response.notification?.request?.identifier;
+      if (notifId && notifId !== GUARDIAN_PERSISTENT_NOTIFICATION_ID) {
+        Notifications.dismissNotificationAsync(notifId).catch(() => {});
+      }
+      dismissEmergencyAlertNotifications().catch(() => {});
 
       const actionId = response.actionIdentifier;
       const data = response.notification.request.content.data || {};
@@ -373,14 +388,16 @@ export async function initEmergencyNotifications(): Promise<void> {
         actionId === 'ACTION_OPEN_ALERT' ||
         data.type === 'ndrrmc_alert' ||
         data.type === 'loud_ping' ||
-        data.type === 'checkin'
+        data.type === 'checkin' ||
+        data.type === 'sos'
       ) {
         const alertData = {
-          alertType: data.alertType || (data.type === 'loud_ping' ? 'loud_ping' : 'checkin'),
-          fromName: data.fromName || data.memberName || 'Family Member',
+          alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'loud_ping' ? 'loud_ping' : 'checkin'),
+          fromName: data.fromName || data.senderName || data.memberName || 'Family Member',
           fromAvatar: data.avatarUrl || null,
           fromLat: data.lat,
           fromLng: data.lng,
+          battery: data.battery,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         };
         if (onOpenNDRRMCEmergencyModal) {
@@ -388,6 +405,11 @@ export async function initEmergencyNotifications(): Promise<void> {
         } else {
           pendingNDRRMCAlert = alertData;
         }
+      }
+
+      if (actionId === 'call_911') {
+        Linking.openURL('tel:911').catch(() => {});
+        return;
       }
 
       // D. Navigation Actions
@@ -399,7 +421,7 @@ export async function initEmergencyNotifications(): Promise<void> {
         navigateToNotificationTarget('Hotlines');
       } else if (actionId === Notifications.DEFAULT_ACTION_IDENTIFIER) {
         // Only navigate to Tracker if not an emergency alert (which opens the NDRRMC modal)
-        if (data.type !== 'ndrrmc_alert' && data.type !== 'loud_ping' && data.type !== 'checkin') {
+        if (data.type !== 'ndrrmc_alert' && data.type !== 'loud_ping' && data.type !== 'checkin' && data.type !== 'sos') {
           navigateToNotificationTarget('Tracker');
         }
       }
@@ -409,13 +431,14 @@ export async function initEmergencyNotifications(): Promise<void> {
     Notifications.getLastNotificationResponseAsync().then((lastResponse) => {
       if (lastResponse) {
         const data = lastResponse.notification.request.content.data || {};
-        if (data.type === 'ndrrmc_alert' || data.type === 'loud_ping' || data.type === 'checkin') {
+        if (data.type === 'ndrrmc_alert' || data.type === 'loud_ping' || data.type === 'checkin' || data.type === 'sos') {
           const alertData = {
-            alertType: data.alertType || (data.type === 'loud_ping' ? 'loud_ping' : 'checkin'),
-            fromName: data.fromName || data.memberName || 'Family Member',
+            alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'loud_ping' ? 'loud_ping' : 'checkin'),
+            fromName: data.fromName || data.senderName || data.memberName || 'Family Member',
             fromAvatar: data.avatarUrl || null,
             fromLat: data.lat,
             fromLng: data.lng,
+            battery: data.battery,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           };
           if (onOpenNDRRMCEmergencyModal) {
@@ -535,6 +558,79 @@ export async function dismissGuardianQuickActionsNotification(): Promise<void> {
 }
 
 /**
+ * Dismisses and cancels all active emergency alert notifications (Notifee & Expo),
+ * clears any displayed non-persistent notifications, and stops emergency audio/vibration.
+ * Keeps the persistent 24/7 background control notification intact.
+ */
+export async function dismissEmergencyAlertNotifications(): Promise<void> {
+  // 1. Stop hardware alarm audio & vibration immediately
+  try {
+    await stopEmergencyAlarmAudio();
+  } catch {}
+  try {
+    Vibration.cancel();
+  } catch {}
+
+  // 2. Dismiss from Notifee
+  const notifee = getNotifee();
+  if (notifee) {
+    try {
+      // Cancel standard emergency notification ID
+      await notifee.cancelNotification(EMERGENCY_ALERT_NOTIFICATION_ID);
+
+      // Cancel any legacy/category trigger IDs or notifications
+      await notifee.cancelNotification('loud_ping');
+      await notifee.cancelNotification('checkin');
+      await notifee.cancelNotification('sos');
+
+      // Purge all displayed notifications except the persistent background service control
+      const displayed = await notifee.getDisplayedNotifications();
+      if (Array.isArray(displayed)) {
+        for (const notif of displayed) {
+          const id = notif.id || notif.notification?.id;
+          if (id && id !== GUARDIAN_PERSISTENT_NOTIFICATION_ID) {
+            await notifee.cancelNotification(id);
+          }
+        }
+      }
+
+      // Cancel any scheduled trigger notifications for emergency alerts
+      const triggerIds = await notifee.getTriggerNotificationIds();
+      if (Array.isArray(triggerIds)) {
+        for (const trigId of triggerIds) {
+          if (trigId !== GUARDIAN_PERSISTENT_NOTIFICATION_ID) {
+            await notifee.cancelTriggerNotification(trigId);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[NotificationService] Notifee dismiss emergency error:', e);
+    }
+  }
+
+  // 3. Dismiss from Expo Notifications
+  try {
+    await Notifications.dismissNotificationAsync(EMERGENCY_ALERT_NOTIFICATION_ID);
+    await Notifications.dismissNotificationAsync('loud_ping');
+    await Notifications.dismissNotificationAsync('checkin');
+    await Notifications.dismissNotificationAsync('sos');
+
+    // Dismiss all presented notifications except the persistent background control
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    if (Array.isArray(presented)) {
+      for (const p of presented) {
+        const id = p.request?.identifier;
+        if (id && id !== GUARDIAN_PERSISTENT_NOTIFICATION_ID) {
+          await Notifications.dismissNotificationAsync(id);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[NotificationService] Expo dismiss emergency error:', e);
+  }
+}
+
+/**
  * Triggers a heads-up system notification for an SOS event with quick actions.
  */
 export async function triggerSOSNotification(
@@ -543,6 +639,9 @@ export async function triggerSOSNotification(
   lng?: number,
   battery?: number | null
 ): Promise<void> {
+  // Clear any existing stale emergency notifications first
+  await dismissEmergencyAlertNotifications().catch(() => {});
+
   Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000]);
 
   // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
@@ -551,24 +650,66 @@ export async function triggerSOSNotification(
   const notifee = getNotifee();
   if (notifee) {
     try {
+      await notifee.requestPermission({ criticalAlert: true });
+      const channelId = await notifee.createChannel({
+        id: NOTIFEE_SIREN_CHANNEL_ID,
+        name: '🚨 Emergency Siren & Loud Ping',
+        importance: notifee.AndroidImportance?.HIGH ?? 4,
+        visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
+        bypassDnd: true,
+        sound: 'alert',
+        lights: true,
+        vibration: true,
+        vibrationPattern: [300, 500],
+      });
+
       await notifee.displayNotification({
+        id: EMERGENCY_ALERT_NOTIFICATION_ID,
         title: '🚨 EMERGENCY SOS ALERT!',
         body: `${senderName} broadcasted an emergency SOS! Live coordinates and battery (${battery ? `${Math.round(battery * 100)}%` : 'Active'}) reported.`,
-        data: { type: 'sos', senderName, lat, lng },
+        data: {
+          type: 'sos',
+          alertType: 'sos',
+          fromName: senderName,
+          senderName,
+          lat,
+          lng,
+          battery,
+          emergencyId: 'sos',
+        },
         android: {
-          channelId: NOTIFEE_SIREN_CHANNEL_ID,
+          channelId,
           sound: 'alert',
           smallIcon: 'notification_icon',
           color: '#DC2626',
           importance: notifee.AndroidImportance?.HIGH ?? 4,
-          category: notifee.AndroidCategory?.ALARM ?? 'alarm',
+          category: notifee.AndroidCategory?.ALARM ?? 'alarm', // ALARM category wakes screen & triggers Full-Screen Intent!
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
+          ongoing: false,
+          autoCancel: true,
+          fullScreenAction: {
+            id: 'default',
+            launchActivity: 'default',
+          },
           pressAction: { id: 'default', launchActivity: 'default' },
+          actions: [
+            {
+              title: '📍 View on Map',
+              pressAction: { id: 'view_tracker', launchActivity: 'default' },
+            },
+            {
+              title: '📞 Call 911',
+              pressAction: { id: 'call_911' },
+            },
+            {
+              title: '⚠️ View Alert Box',
+              pressAction: { id: 'default', launchActivity: 'default' },
+            },
+          ],
         },
         ios: {
-          critical: true,
-          criticalVolume: 1.0,
           sound: EMERGENCY_ALERT_SOUND,
+          interruptionLevel: 'timeSensitive',
         },
       });
       return;
@@ -580,13 +721,23 @@ export async function triggerSOSNotification(
   // Universal Fallback via expo-notifications
   try {
     await Notifications.scheduleNotificationAsync({
+      identifier: EMERGENCY_ALERT_NOTIFICATION_ID,
       content: {
         title: '🚨 EMERGENCY SOS ALERT!',
         body: `${senderName} broadcasted an emergency SOS! Live coordinates and battery (${battery ? `${Math.round(battery * 100)}%` : 'Active'}) reported.`,
         sound: EMERGENCY_ALERT_SOUND,
         categoryIdentifier: GUARDIAN_QUICK_ACTIONS_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
-        data: { type: 'sos', senderName, lat, lng },
+        interruptionLevel: 'timeSensitive',
+        data: {
+          type: 'sos',
+          alertType: 'sos',
+          fromName: senderName,
+          senderName,
+          lat,
+          lng,
+          battery,
+        },
       },
       trigger: (Platform.OS === 'android' ? { channelId: EXPO_SIREN_CHANNEL_ID } : null) as any,
     });
@@ -601,7 +752,13 @@ export async function triggerSOSNotification(
  * and pop up directly over the lock screen and minimized screen.
  */
 export async function triggerLoudPingNotification(fromName: string): Promise<void> {
-  // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
+  // Clear any existing stale emergency notifications first
+  await dismissEmergencyAlertNotifications().catch(() => {});
+
+  // 1. Hardware vibration
+  Vibration.vibrate([0, 800, 200, 800, 200, 1000]);
+
+  // 2. Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
   playEmergencyAlarmAudio('alert', false).catch(() => {});
 
   const notifee = getNotifee();
@@ -621,6 +778,7 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
       });
 
       await notifee.displayNotification({
+        id: EMERGENCY_ALERT_NOTIFICATION_ID,
         title: '🚨 EMERGENCY ALERT (LOUD PING)',
         body: `${fromName} triggered an emergency loud alarm on your phone!`,
         data: { type: 'ndrrmc_alert', alertType: 'loud_ping', fromName, emergencyId: 'loud_ping' },
@@ -632,8 +790,8 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           category: notifee.AndroidCategory?.ALARM ?? 'alarm', // ALARM category wakes the device and triggers Full-Screen Intent!
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
-          ongoing: true, // Prevents swiping away accidentally
-          autoCancel: false,
+          ongoing: false,
+          autoCancel: true,
           fullScreenAction: {
             id: 'default',
             launchActivity: 'default', // Launches MainActivity over lock screen & launcher!
@@ -658,10 +816,8 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
           ],
         },
         ios: {
-          critical: true,
-          criticalVolume: 1.0,
           sound: EMERGENCY_ALERT_SOUND,
-          interruptionLevel: 'critical',
+          interruptionLevel: 'timeSensitive',
         },
       });
       console.log('[NotificationService] Loud ping displayed via Notifee Full-Screen Intent (sound: alert)');
@@ -674,6 +830,7 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
   // Universal Fallback via expo-notifications
   try {
     await Notifications.scheduleNotificationAsync({
+      identifier: EMERGENCY_ALERT_NOTIFICATION_ID,
       content: {
         title: '🚨 EMERGENCY ALERT (LOUD PING)',
         subtitle: '⚠️ NDRRMC PROTOCOL',
@@ -681,7 +838,9 @@ export async function triggerLoudPingNotification(fromName: string): Promise<voi
         sound: EMERGENCY_ALERT_SOUND,
         categoryIdentifier: NDRRMC_ALERT_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
+        interruptionLevel: 'timeSensitive',
         data: { type: 'ndrrmc_alert', alertType: 'loud_ping', fromName },
+        ...(Platform.OS === 'android' ? { channelId: EXPO_SIREN_CHANNEL_ID } : {}),
       },
       trigger: (Platform.OS === 'android' ? { channelId: EXPO_SIREN_CHANNEL_ID } : null) as any,
     });
@@ -707,19 +866,26 @@ export async function sendSafetyCheckNotification(
   lat?: number,
   lng?: number
 ): Promise<void> {
+  // Clear any existing stale emergency notifications first
+  await dismissEmergencyAlertNotifications().catch(() => {});
+
   const resolvedMapUrl =
     mapSnapshotUrl ||
     (lat && lng
       ? `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=15&size=600x300&markers=${lat},${lng},ol-marker`
       : undefined);
 
-  // Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
+  // 1. Hardware vibration
+  Vibration.vibrate([0, 500, 200, 500]);
+
+  // 2. Bulletproof fallback: trigger hardware STREAM_ALARM (bypasses Silent, Vibrate & DND)
   playEmergencyAlarmAudio('notif', false).catch(() => {});
 
-  // 1. If @notifee/react-native native module is present in the build, use its full native power
+  // 3. If @notifee/react-native native module is present in the build, use its full native power
   const notifee = getNotifee();
   if (notifee) {
     try {
+      await notifee.requestPermission({ criticalAlert: true });
       const channelId = await notifee.createChannel({
         id: NOTIFEE_CHECKIN_CHANNEL_ID,
         name: '⚠️ Safety Check-In Alerts',
@@ -732,7 +898,8 @@ export async function sendSafetyCheckNotification(
         vibrationPattern: [300, 500],
       });
 
-      await notifee.displayNotification({
+      const notifConfig = {
+        id: EMERGENCY_ALERT_NOTIFICATION_ID,
         title: `⚠️ ARE YOU SAFE? • ${memberName}`,
         body: `${memberName} sent a priority safety check-in request. Tap to confirm.`,
         data: {
@@ -741,6 +908,8 @@ export async function sendSafetyCheckNotification(
           memberName,
           fromName: memberName,
           emergencyId: 'checkin',
+          lat,
+          lng,
         },
         android: {
           channelId,
@@ -750,8 +919,8 @@ export async function sendSafetyCheckNotification(
           importance: notifee.AndroidImportance?.HIGH ?? 4,
           category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the screen and triggers Full-Screen Intent
           visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
-          ongoing: true,
-          autoCancel: false,
+          ongoing: false,
+          autoCancel: true,
           largeIcon: avatarUrl || undefined,
           circularLargeIcon: true, // Renders member avatar as a round circle
           fullScreenAction: {
@@ -781,23 +950,38 @@ export async function sendSafetyCheckNotification(
           ],
         },
         ios: {
-          categoryId: 'safety-check',
+          categoryId: SAFETY_CHECK_CATEGORY,
           attachments: resolvedMapUrl ? [{ identifier: 'map-snapshot', url: resolvedMapUrl, type: 'image' }] : [],
-          critical: true,
-          criticalVolume: 1.0,
           sound: SAFETY_CHECK_SOUND,
+          interruptionLevel: 'timeSensitive',
         },
-      });
-      console.log('[RichNotification] Displayed via Notifee native engine (sound: notif)');
-      return;
+      };
+
+      try {
+        await notifee.displayNotification(notifConfig);
+        console.log('[RichNotification] Displayed via Notifee native engine (sound: notif)');
+        return;
+      } catch (styleErr) {
+        if (resolvedMapUrl) {
+          try {
+            const fallbackConfig = { ...notifConfig, android: { ...notifConfig.android, style: undefined } };
+            await notifee.displayNotification(fallbackConfig);
+            console.log('[RichNotification] Displayed via Notifee without static map image');
+            return;
+          } catch (retryErr) {
+            console.warn('[RichNotification] Notifee retry without image failed:', retryErr);
+          }
+        }
+      }
     } catch (e) {
       console.warn('[RichNotification] Notifee display fallback:', e);
     }
   }
 
-  // 2. Seamless Universal Fallback via expo-notifications
+  // 4. Seamless Universal Fallback via expo-notifications
   try {
     await Notifications.scheduleNotificationAsync({
+      identifier: EMERGENCY_ALERT_NOTIFICATION_ID,
       content: {
         title: '⚠️ EMERGENCY ALERT: ARE YOU SAFE?',
         subtitle: '🚨 NDRRMC-STYLE SAFETY CHECK',
@@ -805,6 +989,7 @@ export async function sendSafetyCheckNotification(
         sound: SAFETY_CHECK_SOUND,
         categoryIdentifier: SAFETY_CHECK_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
+        interruptionLevel: 'timeSensitive',
         data: {
           type: 'ndrrmc_alert',
           alertType: 'checkin',
@@ -814,6 +999,7 @@ export async function sendSafetyCheckNotification(
           lat,
           lng,
         },
+        ...(Platform.OS === 'android' ? { channelId: EXPO_CHECKIN_CHANNEL_ID } : {}),
       },
       trigger: (Platform.OS === 'android' ? { channelId: EXPO_CHECKIN_CHANNEL_ID } : null) as any,
     });
@@ -835,10 +1021,120 @@ export async function triggerCheckInNotification(
   await sendSafetyCheckNotification(fromName, avatarUrl, undefined, lat, lng);
 }
 
+/**
+ * Registers the device's push token with Supabase so emergency alerts can reach
+ * iOS and Android devices via APNs / FCM even when the app is completely closed or screen is off.
+ */
+export async function registerPushToken(userId: string): Promise<string | null> {
+  if (!userId) return null;
+  try {
+    const tokenData = await Notifications.getExpoPushTokenAsync().catch(() => null);
+    const pushToken = tokenData?.data;
+    if (pushToken) {
+      // 1. Update Supabase users table (ignoring error if column not yet added)
+      try {
+        await supabase.from('users').update({ push_token: pushToken }).eq('id', userId);
+      } catch {}
+
+      // 2. Also save into auth user_metadata so it is permanently accessible
+      try {
+        await supabase.auth.updateUser({ data: { push_token: pushToken } });
+      } catch {}
+
+      console.log('[NotificationService] Push token registered for closed-app delivery:', pushToken);
+      return pushToken;
+    }
+  } catch (e) {
+    console.warn('[NotificationService] Failed to obtain push token:', e);
+  }
+  return null;
+}
+
+/**
+ * Sends a high-priority Time-Sensitive push notification directly to family members' devices.
+ * Uses Apple Push Notification service (APNs) and FCM via Expo Push API to:
+ * 1. Wake the iPhone / Android device even when screen is locked or app is closed.
+ * 2. Break through Do Not Disturb (DND) and Focus modes on iOS (interruptionLevel: timeSensitive).
+ * 3. Play the siren alert sound (alert.mp3 / notif.mp3).
+ * 4. Display action buttons (I'm Safe, Send Help SOS, View Alert Box) on the lock screen.
+ */
+export async function sendEmergencyPushNotification(
+  targetUserIds: string[],
+  title: string,
+  body: string,
+  alertType: 'sos' | 'loud_ping' | 'checkin',
+  senderName: string,
+  lat?: number,
+  lng?: number,
+  battery?: number | null
+): Promise<void> {
+  if (!targetUserIds || targetUserIds.length === 0) return;
+
+  try {
+    const { data: usersWithTokens, error } = await supabase
+      .from('users')
+      .select('id, push_token')
+      .in('id', targetUserIds);
+
+    if (error || !usersWithTokens) {
+      console.warn('[NotificationService] Could not fetch target push tokens:', error);
+      return;
+    }
+
+    const tokens = usersWithTokens
+      .map((u: any) => u.push_token)
+      .filter((t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken'));
+
+    if (tokens.length === 0) {
+      console.log('[NotificationService] No push tokens found for targeted family members');
+      return;
+    }
+
+    const isLoud = alertType === 'sos' || alertType === 'loud_ping';
+    const soundFile = isLoud ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND;
+    const categoryId = alertType === 'checkin' ? SAFETY_CHECK_CATEGORY : NDRRMC_ALERT_CATEGORY;
+
+    const messages = tokens.map((toToken: string) => ({
+      to: toToken,
+      sound: soundFile,
+      title,
+      body,
+      priority: 'high',
+      channelId: isLoud ? EXPO_SIREN_CHANNEL_ID : EXPO_CHECKIN_CHANNEL_ID,
+      categoryId,
+      _displayInForeground: true,
+      interruptionLevel: 'timeSensitive', // iOS 15+ Time-Sensitive (bypasses DND without Apple Critical Alerts waiver)
+      data: {
+        type: alertType === 'sos' ? 'sos' : 'ndrrmc_alert',
+        alertType,
+        fromName: senderName,
+        lat,
+        lng,
+        battery,
+      },
+    }));
+
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Accept-encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(messages),
+    });
+
+    console.log(`[NotificationService] Dispatched Time-Sensitive push notification to ${tokens.length} family devices`);
+  } catch (err) {
+    console.warn('[NotificationService] Failed to dispatch emergency push notification:', err);
+  }
+}
+
 export interface EmergencyAlertCallbacks {
   onLoudPing?: (fromName: string) => void;
   onCheckInRequest?: (fromName: string, fromAvatar?: string, lat?: number, lng?: number) => void;
   onCheckInReply?: (fromName: string, isSafe: boolean) => void;
+  onSOSAlert?: (fromName: string, lat?: number, lng?: number, battery?: number | null) => void;
 }
 
 // Persistent singleton listeners: Keeps WebSocket alive inside Android Foreground Service
@@ -846,6 +1142,106 @@ let activeListeningUserId: string | null = null;
 let currentAlertCallbacks: EmergencyAlertCallbacks | null = null;
 let activeSosChannel: any = null;
 let activeBroadcastChannel: any = null;
+
+// In-memory set of verified family member user IDs for the active user
+// Used for high-performance 0ms family membership checks to prevent stranger SOS alarms
+const knownFamilyMemberUserIds = new Set<string>();
+let lastFamilyFetchTime = 0;
+
+/**
+ * Refreshes the in-memory cache of verified family member IDs for the current user.
+ */
+export async function refreshKnownFamilyMembers(currentUserId: string): Promise<Set<string>> {
+  if (!currentUserId) return knownFamilyMemberUserIds;
+  try {
+    const { data, error } = await supabase
+      .from('family_members')
+      .select('member_user_id')
+      .eq('user_id', currentUserId);
+
+    if (!error && data) {
+      knownFamilyMemberUserIds.clear();
+      data.forEach((row: any) => {
+        if (row.member_user_id) {
+          knownFamilyMemberUserIds.add(row.member_user_id);
+        }
+      });
+      lastFamilyFetchTime = Date.now();
+    }
+  } catch (e) {
+    console.warn('[NotificationService] Failed to refresh known family members:', e);
+  }
+  return knownFamilyMemberUserIds;
+}
+
+/**
+ * Authoritative check to determine if senderId is in currentUserId's family circle.
+ * Prevents strangers / non-family members from triggering emergency SOS alarms.
+ */
+export async function isUserInFamily(currentUserId: string, senderId?: string | null): Promise<boolean> {
+  if (!currentUserId || !senderId) return false;
+  if (currentUserId === senderId) return true; // Self
+
+  // 1. Fast in-memory check (0ms)
+  if (knownFamilyMemberUserIds.has(senderId)) {
+    return true;
+  }
+
+  // 2. If memory cache is empty or older than 60s, refresh it
+  if (knownFamilyMemberUserIds.size === 0 || Date.now() - lastFamilyFetchTime > 60000) {
+    await refreshKnownFamilyMembers(currentUserId);
+    if (knownFamilyMemberUserIds.has(senderId)) {
+      return true;
+    }
+  }
+
+  // 3. Check AsyncStorage cache
+  try {
+    const cached = await AsyncStorage.getItem('@abucay_cached_family_members');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) {
+        for (const m of parsed) {
+          if (m.member_user_id === senderId || m.user_id === senderId) {
+            knownFamilyMemberUserIds.add(senderId);
+            return true;
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Authoritative query directly in Supabase (checks both directions of pairing)
+  try {
+    const { data: forwardCheck } = await supabase
+      .from('family_members')
+      .select('id')
+      .eq('user_id', currentUserId)
+      .eq('member_user_id', senderId)
+      .limit(1);
+
+    if (forwardCheck && forwardCheck.length > 0) {
+      knownFamilyMemberUserIds.add(senderId);
+      return true;
+    }
+
+    const { data: reverseCheck } = await supabase
+      .from('family_members')
+      .select('id')
+      .eq('user_id', senderId)
+      .eq('member_user_id', currentUserId)
+      .limit(1);
+
+    if (reverseCheck && reverseCheck.length > 0) {
+      knownFamilyMemberUserIds.add(senderId);
+      return true;
+    }
+  } catch (e) {
+    console.warn('[NotificationService] Authoritative family check error:', e);
+  }
+
+  return false;
+}
 
 /**
  * Tears down Supabase real-time channels when the user explicitly logs out.
@@ -859,6 +1255,8 @@ export function stopEmergencyAlertMonitoring(): void {
     try { supabase.removeChannel(activeBroadcastChannel); } catch {}
     activeBroadcastChannel = null;
   }
+  knownFamilyMemberUserIds.clear();
+  lastFamilyFetchTime = 0;
   activeListeningUserId = null;
   currentAlertCallbacks = null;
 }
@@ -875,6 +1273,9 @@ export function listenForEmergencyAlerts(
   if (!currentUserId) return () => {};
 
   currentAlertCallbacks = callbacks || null;
+
+  // Eagerly pre-populate verified family members for instant 0ms checks
+  refreshKnownFamilyMembers(currentUserId);
 
   // If already subscribed for this user, keep the live WebSocket channel running!
   if (activeListeningUserId === currentUserId && activeSosChannel && activeBroadcastChannel) {
@@ -898,17 +1299,41 @@ export function listenForEmergencyAlerts(
       { event: 'INSERT', schema: 'public', table: 'sos_events' },
       async (payload) => {
         const newEvent = payload.new as any;
-        if (newEvent && newEvent.user_id !== currentUserId && newEvent.status === 'active') {
-          // Fetch sender name
-          const { data: userData } = await supabase
-            .from('users')
-            .select('name')
-            .eq('id', newEvent.user_id)
-            .single();
+        if (!newEvent || newEvent.status !== 'active') return;
+        if (newEvent.user_id === currentUserId) return; // Do not alert self from DB insert
 
-          const name = userData?.name || 'A family member';
-          triggerSOSNotification(name, newEvent.lat, newEvent.lng);
+        // Security check: ONLY alert if the sender belongs to current user's family circle!
+        const isFamily = await isUserInFamily(currentUserId, newEvent.user_id);
+        if (!isFamily) {
+          console.log(`[SOS] Dropped SOS database event: ${newEvent.user_id} is not in family`);
+          return;
         }
+
+        // Fetch sender name & avatar
+        const { data: userData } = await supabase
+          .from('users')
+          .select('name, avatar_url')
+          .eq('id', newEvent.user_id)
+          .single();
+
+        const name = userData?.name || 'A family member';
+        triggerSOSNotification(name, newEvent.lat, newEvent.lng);
+
+        const alertData = {
+          alertType: 'sos' as const,
+          fromName: name,
+          fromAvatar: userData?.avatar_url || null,
+          fromLat: newEvent.lat,
+          fromLng: newEvent.lng,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+
+        if (onOpenNDRRMCEmergencyModal) {
+          onOpenNDRRMCEmergencyModal(alertData);
+        } else {
+          pendingNDRRMCAlert = alertData;
+        }
+        currentAlertCallbacks?.onSOSAlert?.(name, newEvent.lat, newEvent.lng);
       }
     )
     .subscribe();
@@ -916,56 +1341,163 @@ export function listenForEmergencyAlerts(
   // 2. Listen for Realtime Broadcast events (Loud Ping, Check-in, SOS Broadcast)
   activeBroadcastChannel = supabase
     .channel('family-broadcast')
-    .on('broadcast', { event: 'loud_ping' }, (event) => {
+    .on('broadcast', { event: 'sos_alert' }, async (event) => {
       const payload = event.payload;
-      if (!payload || payload.from_user_id === currentUserId) return;
+      if (!payload) return;
+      if (payload.from_user_id === currentUserId && !payload.is_test) return;
 
-      const isTarget =
-        payload.to_member_id === currentUserId ||
-        payload.to_user_id === currentUserId ||
-        payload.to_row_id === currentUserId ||
-        !payload.to_member_id;
-
-      if (isTarget) {
-        const sender = payload.from_name || 'Family Circle';
-        triggerLoudPingNotification(sender);
-        currentAlertCallbacks?.onLoudPing?.(sender);
-        try {
-          const deepUrl = `abucayguardian://emergency-alert?type=loud_ping&from=${encodeURIComponent(sender)}`;
-          Linking.openURL(deepUrl).catch(() => {});
-        } catch {}
+      // Check 1: If sender specified target_family_user_ids, check membership instantly
+      if (
+        Array.isArray(payload.target_family_user_ids) &&
+        !payload.target_family_user_ids.includes(currentUserId) &&
+        !payload.is_test
+      ) {
+        console.log(`[SOS] Ignored broadcast SOS: current user is not in target_family_user_ids`);
+        return;
       }
+
+      // Check 2: Authoritative family verification (prevents non-family members from triggering sirens)
+      if (!payload.is_test) {
+        const isFamily = await isUserInFamily(currentUserId, payload.from_user_id);
+        if (!isFamily) {
+          console.log(`[SOS] Ignored broadcast SOS: sender ${payload.from_user_id} is not in family circle`);
+          return;
+        }
+      }
+
+      const sender = payload.from_name || 'Family Circle';
+      triggerSOSNotification(sender, payload.lat, payload.lng, payload.battery);
+
+      const alertData = {
+        alertType: 'sos' as const,
+        fromName: sender,
+        fromAvatar: payload.from_avatar || null,
+        fromLat: payload.lat,
+        fromLng: payload.lng,
+        battery: payload.battery,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      if (onOpenNDRRMCEmergencyModal) {
+        onOpenNDRRMCEmergencyModal(alertData);
+      } else {
+        pendingNDRRMCAlert = alertData;
+      }
+      currentAlertCallbacks?.onSOSAlert?.(sender, payload.lat, payload.lng, payload.battery);
+
+      try {
+        const deepUrl = `abucayguardian://emergency-alert?type=sos&from=${encodeURIComponent(sender)}`;
+        Linking.openURL(deepUrl).catch(() => {});
+      } catch {}
     })
-    .on('broadcast', { event: 'checkin_request' }, (event) => {
+    .on('broadcast', { event: 'loud_ping' }, async (event) => {
       const payload = event.payload;
-      if (!payload || payload.from_user_id === currentUserId) return;
+      if (!payload) return;
+      if (payload.from_user_id === currentUserId && !payload.is_test) return;
 
+      // Must explicitly target current user or be a local test
       const isTarget =
         payload.to_member_id === currentUserId ||
         payload.to_user_id === currentUserId ||
         payload.to_row_id === currentUserId ||
-        !payload.to_member_id;
+        Boolean(payload.is_test);
 
-      if (isTarget) {
-        const sender = payload.from_name || 'Family Circle';
-        sendSafetyCheckNotification(
-          sender,
-          payload.from_avatar,
-          undefined,
-          payload.from_lat,
-          payload.from_lng
-        );
-        currentAlertCallbacks?.onCheckInRequest?.(
-          sender,
-          payload.from_avatar,
-          payload.from_lat,
-          payload.from_lng
-        );
-        try {
-          const deepUrl = `abucayguardian://emergency-alert?type=checkin&from=${encodeURIComponent(sender)}`;
-          Linking.openURL(deepUrl).catch(() => {});
-        } catch {}
+      if (!isTarget) return;
+
+      // Verify sender is in family
+      if (!payload.is_test) {
+        const isFamily = await isUserInFamily(currentUserId, payload.from_user_id);
+        if (!isFamily) {
+          console.log(`[LoudPing] Ignored ping from non-family sender: ${payload.from_user_id}`);
+          return;
+        }
       }
+
+      const sender = payload.from_name || 'Family Circle';
+      triggerLoudPingNotification(sender);
+
+      const alertData = {
+        alertType: 'loud_ping' as const,
+        fromName: sender,
+        fromAvatar: payload.from_avatar || null,
+        fromLat: payload.from_lat,
+        fromLng: payload.from_lng,
+        battery: payload.battery,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      if (onOpenNDRRMCEmergencyModal) {
+        onOpenNDRRMCEmergencyModal(alertData);
+      } else {
+        pendingNDRRMCAlert = alertData;
+      }
+
+      currentAlertCallbacks?.onLoudPing?.(sender);
+
+      try {
+        const deepUrl = `abucayguardian://emergency-alert?type=loud_ping&from=${encodeURIComponent(sender)}`;
+        Linking.openURL(deepUrl).catch(() => {});
+      } catch {}
+    })
+    .on('broadcast', { event: 'checkin_request' }, async (event) => {
+      const payload = event.payload;
+      if (!payload) return;
+      if (payload.from_user_id === currentUserId && !payload.is_test) return;
+
+      // Must explicitly target current user or be a local test
+      const isTarget =
+        payload.to_member_id === currentUserId ||
+        payload.to_user_id === currentUserId ||
+        payload.to_row_id === currentUserId ||
+        Boolean(payload.is_test);
+
+      if (!isTarget) return;
+
+      // Verify sender is in family
+      if (!payload.is_test) {
+        const isFamily = await isUserInFamily(currentUserId, payload.from_user_id);
+        if (!isFamily) {
+          console.log(`[CheckIn] Ignored checkin from non-family sender: ${payload.from_user_id}`);
+          return;
+        }
+      }
+
+      const sender = payload.from_name || 'Family Circle';
+      sendSafetyCheckNotification(
+        sender,
+        payload.from_avatar,
+        undefined,
+        payload.from_lat,
+        payload.from_lng
+      );
+
+      const alertData = {
+        alertType: 'checkin' as const,
+        fromName: sender,
+        fromAvatar: payload.from_avatar || null,
+        fromLat: payload.from_lat,
+        fromLng: payload.from_lng,
+        battery: payload.battery,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      if (onOpenNDRRMCEmergencyModal) {
+        onOpenNDRRMCEmergencyModal(alertData);
+      } else {
+        pendingNDRRMCAlert = alertData;
+      }
+
+      currentAlertCallbacks?.onCheckInRequest?.(
+        sender,
+        payload.from_avatar,
+        payload.from_lat,
+        payload.from_lng
+      );
+
+      try {
+        const deepUrl = `abucayguardian://emergency-alert?type=checkin&from=${encodeURIComponent(sender)}`;
+        Linking.openURL(deepUrl).catch(() => {});
+      } catch {}
     })
     .on('broadcast', { event: 'checkin_reply' }, (event) => {
       const payload = event.payload;
@@ -988,8 +1520,10 @@ export function listenForEmergencyAlerts(
     .subscribe();
 
   return () => {
-    // UI unmounted or navigated away: detach active UI callback, but keep the WebSocket connection alive 24/7!
-    currentAlertCallbacks = null;
+    // Only detach if currentAlertCallbacks has not been replaced by another component
+    if (currentAlertCallbacks === callbacks) {
+      currentAlertCallbacks = null;
+    }
   };
 }
 
@@ -998,21 +1532,29 @@ export function listenForEmergencyAlerts(
  * either immediately (in-app test) or after a countdown (minimized/lockscreen test).
  */
 export async function triggerTestNDRRMCAlert(
-  alertType: 'loud_ping' | 'checkin',
+  alertType: 'loud_ping' | 'checkin' | 'sos',
   delaySeconds: number = 0,
   senderName: string = 'NDRRMC / Family Member'
 ): Promise<void> {
+  const isSOS = alertType === 'sos';
   const alertData = {
     alertType,
     fromName: senderName,
+    fromLat: 14.7352,
+    fromLng: 120.5312,
+    battery: 0.88,
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
 
   if (delaySeconds <= 0) {
     if (onOpenNDRRMCEmergencyModal) {
       onOpenNDRRMCEmergencyModal(alertData);
+    } else {
+      pendingNDRRMCAlert = alertData;
     }
-    if (alertType === 'loud_ping') {
+    if (isSOS) {
+      await triggerSOSNotification(senderName, 14.7352, 120.5312, 0.88);
+    } else if (alertType === 'loud_ping') {
       await triggerLoudPingNotification(senderName);
     } else {
       await sendSafetyCheckNotification(senderName);
@@ -1020,14 +1562,21 @@ export async function triggerTestNDRRMCAlert(
     return;
   }
 
+  // Clear any existing stale emergency notifications first
+  await dismissEmergencyAlertNotifications().catch(() => {});
+
   // NATIVE ALARM SCHEDULING (Never paused by Android OS sleep or Doze mode!)
   const notifee = getNotifee();
   if (notifee) {
     try {
-      const isLoudPing = alertType === 'loud_ping';
-      const channelId = isLoudPing ? NOTIFEE_SIREN_CHANNEL_ID : NOTIFEE_CHECKIN_CHANNEL_ID;
-      const soundName = isLoudPing ? 'alert' : 'notif';
-      const channelName = isLoudPing ? '🚨 Emergency Siren & Loud Ping' : '⚠️ Safety Check-In Alerts';
+      const isLoud = alertType === 'loud_ping' || alertType === 'sos';
+      const channelId = isLoud ? NOTIFEE_SIREN_CHANNEL_ID : NOTIFEE_CHECKIN_CHANNEL_ID;
+      const soundName = isLoud ? 'alert' : 'notif';
+      const channelName = isSOS
+        ? '🚨 Emergency SOS Distress'
+        : isLoud
+        ? '🚨 Emergency Siren & Loud Ping'
+        : '⚠️ Safety Check-In Alerts';
 
       await notifee.createChannel({
         id: channelId,
@@ -1049,28 +1598,42 @@ export async function triggerTestNDRRMCAlert(
         },
       };
 
+      const notifTitle = isSOS
+        ? '🚨 EMERGENCY SOS ALERT (TEST)'
+        : alertType === 'loud_ping'
+        ? '🚨 EMERGENCY ALERT (LOUD PING)'
+        : '⚠️ ARE YOU SAFE? • NDRRMC';
+
+      const notifBody = isSOS
+        ? `${senderName} broadcasted an emergency SOS! Tap to view live distress map.`
+        : alertType === 'loud_ping'
+        ? `${senderName} triggered an emergency alarm on your phone!`
+        : `${senderName} requested an urgent safety check-in!`;
+
       await notifee.createTriggerNotification(
         {
-          title: isLoudPing ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE? • NDRRMC',
-          body: isLoudPing
-            ? `${senderName} triggered an emergency alarm on your phone!`
-            : `${senderName} requested an urgent safety check-in!`,
+          id: EMERGENCY_ALERT_NOTIFICATION_ID,
+          title: notifTitle,
+          body: notifBody,
           data: {
-            type: 'ndrrmc_alert',
+            type: isSOS ? 'sos' : 'ndrrmc_alert',
             alertType,
             fromName: senderName,
             emergencyId: alertType,
+            lat: 14.7352,
+            lng: 120.5312,
+            battery: 0.88,
           },
           android: {
             channelId,
             sound: soundName,
             smallIcon: 'notification_icon',
-            color: isLoudPing ? '#DC2626' : '#2563EB',
+            color: isSOS ? '#B91C1C' : isLoud ? '#DC2626' : '#2563EB',
             importance: notifee.AndroidImportance?.HIGH ?? 4,
             category: notifee.AndroidCategory?.ALARM ?? 'alarm', // Wakes the device and triggers Full-Screen Intent
             visibility: notifee.AndroidVisibility?.PUBLIC ?? 1,
-            ongoing: true,
-            autoCancel: false,
+            ongoing: false,
+            autoCancel: true,
             fullScreenAction: {
               id: 'default',
               launchActivity: 'default',
@@ -1079,25 +1642,40 @@ export async function triggerTestNDRRMCAlert(
               id: 'default',
               launchActivity: 'default',
             },
-            actions: [
-              {
-                title: '⚠️ View Alert Box',
-                pressAction: { id: 'default', launchActivity: 'default' },
-              },
-              {
-                title: '✅ I Am Safe',
-                pressAction: { id: 'mark_safe' },
-              },
-              {
-                title: '🚨 SOS',
-                pressAction: { id: 'trigger_sos', launchActivity: 'default' },
-              },
-            ],
+            actions: isSOS
+              ? [
+                  {
+                    title: '📍 View on Map',
+                    pressAction: { id: 'view_tracker', launchActivity: 'default' },
+                  },
+                  {
+                    title: '📞 Call 911',
+                    pressAction: { id: 'call_911' },
+                  },
+                  {
+                    title: '⚠️ View Alert Box',
+                    pressAction: { id: 'default', launchActivity: 'default' },
+                  },
+                ]
+              : [
+                  {
+                    title: '⚠️ View Alert Box',
+                    pressAction: { id: 'default', launchActivity: 'default' },
+                  },
+                  {
+                    title: '✅ I Am Safe',
+                    pressAction: { id: 'mark_safe' },
+                  },
+                  {
+                    title: '🚨 SOS',
+                    pressAction: { id: 'trigger_sos', launchActivity: 'default' },
+                  },
+                ],
           },
           ios: {
             critical: true,
             criticalVolume: 1.0,
-            sound: isLoudPing ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND,
+            sound: isLoud ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND,
             interruptionLevel: 'critical',
           },
         },
@@ -1112,21 +1690,28 @@ export async function triggerTestNDRRMCAlert(
 
   // Universal Fallback via expo-notifications native interval trigger
   try {
-    const isLoudPing = alertType === 'loud_ping';
-    const expoChannel = isLoudPing ? EXPO_SIREN_CHANNEL_ID : EXPO_CHECKIN_CHANNEL_ID;
-    const soundFile = isLoudPing ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND;
+    const isLoud = alertType === 'loud_ping' || alertType === 'sos';
+    const expoChannel = isLoud ? EXPO_SIREN_CHANNEL_ID : EXPO_CHECKIN_CHANNEL_ID;
+    const soundFile = isLoud ? EMERGENCY_ALERT_SOUND : SAFETY_CHECK_SOUND;
 
     await Notifications.scheduleNotificationAsync({
+      identifier: EMERGENCY_ALERT_NOTIFICATION_ID,
       content: {
-        title: isLoudPing ? '🚨 EMERGENCY ALERT (LOUD PING)' : '⚠️ ARE YOU SAFE?',
-        subtitle: '⚠️ NDRRMC PROTOCOL',
-        body: isLoudPing
+        title: isSOS
+          ? '🚨 EMERGENCY SOS ALERT (TEST)'
+          : isLoud
+          ? '🚨 EMERGENCY ALERT (LOUD PING)'
+          : '⚠️ ARE YOU SAFE?',
+        subtitle: isSOS ? '🚨 LIFE DISTRESS BEACON' : '⚠️ NDRRMC PROTOCOL',
+        body: isSOS
+          ? `${senderName} broadcasted an emergency SOS! Tap to view live distress map.`
+          : isLoud
           ? `${senderName} triggered an emergency alarm!`
           : `${senderName} asked: Are you safe?`,
         sound: soundFile,
         categoryIdentifier: NDRRMC_ALERT_CATEGORY,
         priority: Notifications.AndroidNotificationPriority.MAX,
-        data: { type: 'ndrrmc_alert', alertType, fromName: senderName },
+        data: { type: isSOS ? 'sos' : 'ndrrmc_alert', alertType, fromName: senderName, lat: 14.7352, lng: 120.5312, battery: 0.88 },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,

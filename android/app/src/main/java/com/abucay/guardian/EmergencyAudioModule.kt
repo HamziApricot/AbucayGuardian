@@ -1,5 +1,6 @@
 package com.abucay.guardian
 
+import android.app.ActivityManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -232,6 +233,83 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
             }
         } catch (e: Exception) {
             promise.reject("BATTERY_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Minimizes the application into the background without destroying the activity,
+     * ensuring tracking and services continue undisturbed without exiting the app.
+     */
+    @ReactMethod
+    fun moveToBackground(promise: Promise) {
+        try {
+            val activity = currentActivity
+            if (activity != null) {
+                val moved = activity.moveTaskToBack(true)
+                promise.resolve(moved)
+                return
+            }
+            promise.resolve(false)
+        } catch (e: Exception) {
+            promise.reject("MOVE_BACK_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Starts Android Lock Task Mode (Screen Pinning / Kiosk Mode).
+     * When active:
+     * - Home, Recent Apps, and Status Bar/Settings are blocked.
+     * - The user cannot open Settings to tap "Force Stop" or swipe the app away.
+     */
+    @ReactMethod
+    fun startKioskMode(promise: Promise) {
+        try {
+            val activity = currentActivity
+            if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                activity.startLockTask()
+                promise.resolve(true)
+                return
+            }
+            promise.resolve(false)
+        } catch (e: Exception) {
+            promise.reject("LOCK_TASK_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Exits Android Lock Task Mode (Screen Pinning).
+     */
+    @ReactMethod
+    fun stopKioskMode(promise: Promise) {
+        try {
+            val activity = currentActivity
+            if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                activity.stopLockTask()
+                promise.resolve(true)
+                return
+            }
+            promise.resolve(false)
+        } catch (e: Exception) {
+            promise.reject("LOCK_TASK_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Checks if Lock Task Mode (Screen Pinning) is currently active.
+     */
+    @ReactMethod
+    fun isKioskModeActive(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val activityManager =
+                    reactApplicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val lockMode = activityManager?.lockTaskModeState ?: ActivityManager.LOCK_TASK_MODE_NONE
+                promise.resolve(lockMode != ActivityManager.LOCK_TASK_MODE_NONE)
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.resolve(false)
         }
     }
 

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "postinstall": "node scripts/patch-rn-cmake.js",
     "start": "expo start",
     "start:dev": "expo start",
     "start:go": "expo start --go",
@@ -20,7 +21,7 @@
     "@react-navigation/bottom-tabs": "^6.6.0",
     "@react-navigation/native": "^6.1.18",
     "@react-navigation/native-stack": "^6.11.0",
-    "@supabase/supabase-js": "^2.97.0",
+    "@supabase/supabase-js": "^2.119.0",
     "base64-arraybuffer": "^1.0.2",
     "expo": "~58.0.23",
     "expo-battery": "~58.0.3",

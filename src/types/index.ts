@@ -4,6 +4,7 @@ export type UserProfile = {
     phone: string;
     avatar_url?: string;
     pairing_code?: string;
+    push_token?: string;
     lat?: number;
     lng?: number;
     updated_at?: string;

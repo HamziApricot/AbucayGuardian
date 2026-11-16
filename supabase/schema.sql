@@ -13,13 +13,16 @@ create table if not exists public.users (
   phone text not null,
   avatar_url text,
   pairing_code text unique,
+  push_token text,
   lat double precision,
   lng double precision,
   updated_at timestamptz default now()
 );
+alter table public.users add column if not exists push_token text;
 alter table public.users enable row level security;
 drop policy if exists "Users can view own profile" on public.users;
-create policy "Users can view own profile" on public.users for select using (auth.uid() = id);
+drop policy if exists "Users can view profiles" on public.users;
+create policy "Users can view profiles" on public.users for select using (true);
 drop policy if exists "Users can update own profile" on public.users;
 create policy "Users can update own profile" on public.users for update using (auth.uid() = id);
 drop policy if exists "Users can insert own profile" on public.users;
@@ -42,7 +45,7 @@ create policy "Users can view own family members" on public.family_members for s
 drop policy if exists "Users can insert family members" on public.family_members;
 create policy "Users can insert family members" on public.family_members for insert with check (auth.uid() = user_id);
 drop policy if exists "Users can update family members" on public.family_members;
-create policy "Users can update family members" on public.family_members for update using (auth.uid() = user_id);
+create policy "Users can update family members" on public.family_members for update using (auth.uid() = user_id or auth.uid() = member_user_id);
 drop policy if exists "Users can delete family members" on public.family_members;
 create policy "Users can delete family members" on public.family_members for delete using (auth.uid() = user_id);
 

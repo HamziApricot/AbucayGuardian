@@ -27,8 +27,18 @@ import {
     type NavigationRoute,
 } from '../services/RoutingService';
 import { FamilyActionSheet } from '../components/FamilyActionSheet';
-import { queueSOSEvent } from '../utils/cache';
-import { getTrackingStatus } from '../utils/tracking';
+import {
+    queueSOSEvent,
+    queueLocationUpdate,
+    getQueuedLocations,
+    clearLocationQueue,
+    saveLastKnownLocation,
+    getLastKnownLocation,
+    saveLastFetchTimestamp,
+    getLastFetchTimestamp,
+} from '../utils/cache';
+import { getTrackingStatus, formatFromAgo } from '../utils/tracking';
+import { triggerTestNDRRMCAlert, sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
 
 /**
  * Calculates bearing angle in degrees (0-360) from coordinate 1 to coordinate 2.
@@ -63,6 +73,8 @@ export default function FamilyTrackerScreen() {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [cardHeight, setCardHeight] = useState<number>(360);
     const [isLocalOnline, setIsLocalOnline] = useState(true);
+    const [lastFetchTimestamp, setLastFetchTimestamp] = useState<string | null>(null);
+    const wasOnlineRef = useRef(true);
     const [isMarkedSafe, setIsMarkedSafe] = useState(false);
     const [navigationRoute, setNavigationRoute] = useState<NavigationRoute | null>(null);
     const [currentNavStepIndex, setCurrentNavStepIndex] = useState<number>(0);
@@ -159,6 +171,23 @@ export default function FamilyTrackerScreen() {
     ) => {
         if (!user?.id) return;
         const nowIso = new Date().toISOString();
+
+        // Always save last known coordinates to local storage for instant offline boot
+        saveLastKnownLocation(coords);
+
+        // If offline: buffer in local queue so satellite GPS points are NEVER lost
+        if (!isLocalOnline) {
+            queueLocationUpdate({
+                user_id: user.id,
+                lat: coords.lat,
+                lng: coords.lng,
+                accuracy,
+                speed,
+                battery,
+                heading,
+            });
+            return;
+        }
 
         // 1. Peer-to-peer broadcast for instant real-time UI indicator on all circle members' devices
         try {
@@ -261,10 +290,69 @@ export default function FamilyTrackerScreen() {
         return () => clearInterval(heartbeat);
     }, [user?.id, myLocation?.lat, myLocation?.lng, userAccuracy, userSpeed, userBattery]);
 
+    const flushQueuedLocations = async () => {
+        try {
+            const queued = await getQueuedLocations();
+            if (queued && queued.length > 0) {
+                console.log(`[FamilyTracker] Syncing ${queued.length} offline GPS updates to Supabase...`);
+                try {
+                    await supabase.from('location_history').insert(queued);
+                } catch {}
+                await clearLocationQueue();
+            }
+        } catch (e) {
+            console.warn('[FamilyTracker] Flush queued error:', e);
+        }
+    };
+
     useEffect(() => {
-        const unsubscribe = NetInfo.addEventListener((state) => {
-            setIsLocalOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
+        // Query initial connection state on mount
+        NetInfo.fetch().then((state) => {
+            const online = Boolean(state.isConnected && state.isInternetReachable !== false);
+            setIsLocalOnline(online);
+            wasOnlineRef.current = online;
         });
+
+        const unsubscribe = NetInfo.addEventListener(async (state) => {
+            const currentlyOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
+            setIsLocalOnline(currentlyOnline);
+
+            // User was online, and SUDDENLY went offline!
+            if (wasOnlineRef.current && !currentlyOnline) {
+                console.log('[FamilyTracker] Suddenly went offline. Reloading cached data & keeping offline GPS tracking active.');
+                showToast({
+                    message: '📡 Network lost — switched to offline mode. Local GPS tracking remains active.',
+                    type: 'warning',
+                });
+
+                // Immediately reload the latest cached info
+                try {
+                    const cachedStr = await AsyncStorage.getItem('@abucay_cached_family_members');
+                    if (cachedStr) {
+                        const parsed = JSON.parse(cachedStr);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            setFamilyLocations(parsed);
+                        }
+                    }
+                    const lastTime = await getLastFetchTimestamp();
+                    if (lastTime) setLastFetchTimestamp(lastTime);
+                } catch (e) {}
+            }
+
+            // User was offline, and came BACK online!
+            if (!wasOnlineRef.current && currentlyOnline) {
+                console.log('[FamilyTracker] Reconnected to internet. Syncing live data...');
+                showToast({
+                    message: '📶 Connection restored. Syncing live locations...',
+                    type: 'success',
+                });
+                fetchFamilyLocations();
+                flushQueuedLocations();
+            }
+
+            wasOnlineRef.current = currentlyOnline;
+        });
+
         return () => unsubscribe();
     }, []);
 
@@ -300,6 +388,32 @@ export default function FamilyTrackerScreen() {
 
     useEffect(() => {
         if (!user?.id) return;
+
+        // 1. Immediately load last known user location so map renders instantly offline
+        getLastKnownLocation().then((cachedLoc) => {
+            if (cachedLoc?.lat && cachedLoc?.lng) {
+                setMyLocation(cachedLoc);
+                setLoading(false);
+            }
+        });
+
+        // 2. Immediately load background-cached family members so circle appears with 0ms delay
+        AsyncStorage.getItem('@abucay_cached_family_members').then((cached) => {
+            if (cached) {
+                try {
+                    const parsed = JSON.parse(cached);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        setFamilyLocations(parsed);
+                        setLoading(false);
+                    }
+                } catch {}
+            }
+        });
+
+        // 3. Immediately load last fetch timestamp
+        getLastFetchTimestamp().then((ts) => {
+            if (ts) setLastFetchTimestamp(ts);
+        });
 
         let locationSub: any = null;
 
@@ -358,6 +472,18 @@ export default function FamilyTrackerScreen() {
             })
             .subscribe();
 
+        // Users table listener for profile name/phone/avatar updates
+        const usersSub = supabase
+            .channel(`family-tracker-users-${user.id}`)
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'users',
+            }, () => {
+                fetchFamilyLocations();
+            })
+            .subscribe();
+
         // Live broadcast listener for instant peer-to-peer coordinates, battery, heading & accuracy
         const broadcastSub = supabase
             .channel('family-broadcast')
@@ -394,6 +520,10 @@ export default function FamilyTrackerScreen() {
                     })
                 );
             })
+            .on('broadcast', { event: 'profile_updated' }, ({ payload }) => {
+                if (!payload || !payload.user_id) return;
+                fetchFamilyLocations();
+            })
             .on('broadcast', { event: 'checkin_reply' }, ({ payload }) => {
                 if (!payload || !payload.from_user_id) return;
                 fetchFamilyLocations();
@@ -410,6 +540,7 @@ export default function FamilyTrackerScreen() {
             }
             supabase.removeChannel(trackerSub);
             supabase.removeChannel(familySub);
+            supabase.removeChannel(usersSub);
             // Notice: We deliberately do NOT remove 'family-broadcast' here so App.tsx's global emergency listeners stay active
         };
     }, [user?.id]);
@@ -438,27 +569,33 @@ export default function FamilyTrackerScreen() {
             }
         }
 
-        // Initial position with Highest Precision GPS
-        const loc = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Highest,
-        });
-        const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
-        setMyLocation(coords);
-        setUserAccuracy(Math.round(loc.coords.accuracy ?? 5));
-        setUserSpeed(Math.max(0, loc.coords.speed ?? 0));
-        setLoading(false);
-        mapRef.current?.animateToRegion?.({
-            latitude: coords.lat, longitude: coords.lng, latitudeDelta: 0.02, longitudeDelta: 0.02,
-        });
+        // Initial position with Highest Precision GPS (Hardware satellite GNSS)
+        try {
+            const loc = await Location.getCurrentPositionAsync({
+                accuracy: Location.Accuracy.Balanced,
+            });
+            const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+            setMyLocation(coords);
+            setUserAccuracy(Math.round(loc.coords.accuracy ?? 5));
+            setUserSpeed(Math.max(0, loc.coords.speed ?? 0));
+            setLoading(false);
+            saveLastKnownLocation(coords);
+            mapRef.current?.animateToRegion?.({
+                latitude: coords.lat, longitude: coords.lng, latitudeDelta: 0.02, longitudeDelta: 0.02,
+            });
 
-        // Immediately sync initial coordinates to Supabase and family broadcast (so stationary member is Active now!)
-        syncLocationToSupabaseAndFamily(
-            coords,
-            loc.coords.speed ?? 0,
-            Math.round(loc.coords.accuracy ?? 5),
-            userBattery,
-            userHeadingRef.current
-        );
+            // Sync or buffer coordinates
+            syncLocationToSupabaseAndFamily(
+                coords,
+                loc.coords.speed ?? 0,
+                Math.round(loc.coords.accuracy ?? 5),
+                userBattery,
+                userHeadingRef.current
+            );
+        } catch (posErr) {
+            console.warn('[Location] Initial position query offline or waiting for satellite lock:', posErr);
+            setLoading(false);
+        }
 
         // Live orientation/compass tracking for the facing indicator
         try {
@@ -493,6 +630,8 @@ export default function FamilyTrackerScreen() {
                 }
 
                 setMyLocation(newCoords);
+                setLoading(false);
+                saveLastKnownLocation(newCoords);
                 setUserSpeed(curSpeed);
                 setUserAccuracy(curAcc);
                 setUserRouteHistory((prev) => [
@@ -601,25 +740,58 @@ export default function FamilyTrackerScreen() {
     const fetchFamilyLocations = async () => {
         if (!user) return;
         try {
-            // Fetch family members with joined user details (avatar, lat, lng, updated_at)
-            const { data: members, error: memError } = await supabase
+            // 1. Fetch direct family members (added by this user)
+            const { data: directMembers, error: memError } = await supabase
                 .from('family_members')
-                .select('*, member:users!member_user_id(avatar_url, lat, lng, updated_at)')
+                .select('*, member:users!member_user_id(id, name, phone, avatar_url, lat, lng, updated_at)')
                 .eq('user_id', user.id);
 
             if (memError) {
-                console.warn('[FamilyTracker] Fetch members error:', memError);
-                return;
+                console.warn('[FamilyTracker] Fetch direct members error:', memError);
             }
-            if (!members) return;
 
-            // Fetch tracker entries for each family member
-            const memberUserIds = members.filter((m: any) => m.member_user_id).map((m: any) => m.member_user_id);
+            let allRawMembers: any[] = (directMembers as any[]) || [];
+
+            // 2. Fetch reciprocal family members (where current user was added by a family member)
+            try {
+                const { data: reverseMembers } = await supabase
+                    .from('family_members')
+                    .select('*, member:users!user_id(id, name, phone, avatar_url, lat, lng, updated_at)')
+                    .eq('member_user_id', user.id);
+
+                if (reverseMembers && reverseMembers.length > 0) {
+                    reverseMembers.forEach((rm: any) => {
+                        // The linked family contact is the creator of the row (user_id)
+                        const exists = allRawMembers.some(
+                            (m: any) => (m.member_user_id === rm.user_id) || (m.user_id === rm.user_id)
+                        );
+                        if (!exists) {
+                            allRawMembers.push({
+                                ...rm,
+                                member_user_id: rm.user_id,
+                                name: rm.member?.name || rm.name,
+                                phone: rm.member?.phone || rm.phone,
+                                avatar_url: rm.member?.avatar_url || rm.avatar_url,
+                                relationship: rm.relationship || 'Family',
+                            });
+                        }
+                    });
+                }
+            } catch (revErr) {
+                // Non-blocking fallback
+            }
+
+            // Extract all target user IDs
+            const memberUserIds = allRawMembers
+                .map((m: any) => m.member_user_id)
+                .filter((id: any) => Boolean(id) && id !== user.id);
+
             if (memberUserIds.length === 0) {
                 setFamilyLocations([]);
                 return;
             }
 
+            // 3. Query tracker table for real-time coordinates, battery, speed, accuracy, heading
             const { data: locs, error: locsError } = await supabase
                 .from('tracker')
                 .select('*')
@@ -629,7 +801,17 @@ export default function FamilyTrackerScreen() {
                 console.warn('[FamilyTracker] Fetch tracker error:', locsError);
             }
 
-            // Also check latest location_history for true battery, speed, and accuracy
+            // 4. Query users table for fresh live profile name, phone, avatar, lat, lng, updated_at
+            let usersData: any[] = [];
+            try {
+                const { data: uData } = await supabase
+                    .from('users')
+                    .select('id, name, phone, avatar_url, lat, lng, updated_at')
+                    .in('id', memberUserIds);
+                if (uData) usersData = uData;
+            } catch {}
+
+            // 5. Query latest location_history for true battery, speed, and accuracy buffer
             const historyMap: { [userId: string]: any } = {};
             try {
                 const { data: histData } = await supabase
@@ -650,33 +832,43 @@ export default function FamilyTrackerScreen() {
                 // Non-blocking
             }
 
-            const merged = members.map((m: any) => {
+            // 6. Merge and normalize telemetry & personal info
+            const merged = allRawMembers.map((m: any) => {
                 const loc = locs?.find((l: any) => l.user_id === m.member_user_id);
-                const userFallback = m.member;
+                const liveUser = usersData.find((u: any) => u.id === m.member_user_id) || m.member;
                 const hist = historyMap[m.member_user_id];
 
                 // Pick the freshest timestamp between tracker and users table
-                let resolvedLat = loc?.lat ?? userFallback?.lat ?? m.lat;
-                let resolvedLng = loc?.lng ?? userFallback?.lng ?? m.lng;
-                let resolvedUpdatedAt = loc?.updated_at || userFallback?.updated_at || m.updated_at;
+                let resolvedLat = loc?.lat ?? liveUser?.lat ?? m.lat;
+                let resolvedLng = loc?.lng ?? liveUser?.lng ?? m.lng;
+                let resolvedUpdatedAt = loc?.updated_at || liveUser?.updated_at || m.updated_at;
 
-                if (loc?.updated_at && userFallback?.updated_at) {
+                if (loc?.updated_at && liveUser?.updated_at) {
                     const trackerTime = new Date(loc.updated_at).getTime();
-                    const userTime = new Date(userFallback.updated_at).getTime();
+                    const userTime = new Date(liveUser.updated_at).getTime();
                     if (!isNaN(userTime) && userTime > trackerTime) {
-                        resolvedLat = userFallback.lat ?? resolvedLat;
-                        resolvedLng = userFallback.lng ?? resolvedLng;
-                        resolvedUpdatedAt = userFallback.updated_at;
+                        resolvedLat = liveUser.lat ?? resolvedLat;
+                        resolvedLng = liveUser.lng ?? resolvedLng;
+                        resolvedUpdatedAt = liveUser.updated_at;
                     }
                 }
 
-                const resolvedBattery = loc?.battery ?? hist?.battery ?? m.battery ?? null;
+                // Battery normalization (guaranteed 0.0 - 1.0 or null)
+                const rawBattery = loc?.battery ?? hist?.battery ?? m.battery ?? null;
+                let resolvedBattery: number | null = null;
+                if (rawBattery != null && rawBattery >= 0) {
+                    resolvedBattery = rawBattery > 1 ? rawBattery / 100 : rawBattery;
+                }
+
                 const resolvedAccuracy = loc?.accuracy ?? hist?.accuracy ?? m.accuracy ?? 5;
                 const resolvedSpeed = loc?.speed ?? hist?.speed ?? m.speed ?? 0;
                 const resolvedHeading = loc?.heading ?? hist?.heading ?? m.heading ?? null;
 
                 return {
                     ...m,
+                    name: liveUser?.name || m.name,
+                    phone: liveUser?.phone || m.phone,
+                    avatar_url: liveUser?.avatar_url || m.avatar_url,
                     lat: resolvedLat,
                     lng: resolvedLng,
                     accuracy: resolvedAccuracy,
@@ -684,12 +876,29 @@ export default function FamilyTrackerScreen() {
                     battery: resolvedBattery,
                     heading: resolvedHeading,
                     updated_at: resolvedUpdatedAt,
-                    avatar_url: m.member?.avatar_url || m.avatar_url // Prioritize live avatar
+                    relationship: m.relationship || 'Family',
                 };
             });
+
+            const nowIso = new Date().toISOString();
             setFamilyLocations(merged);
+            setLastFetchTimestamp(nowIso);
+            saveLastFetchTimestamp(nowIso);
+            AsyncStorage.setItem('@abucay_cached_family_members', JSON.stringify(merged)).catch(() => {});
         } catch (err) {
-            console.warn('[FamilyTracker] fetchFamilyLocations caught error:', err);
+            console.warn('[FamilyTracker] fetchFamilyLocations caught error (offline fallback):', err);
+            // Restore from disk cache if network fails or offline
+            try {
+                const cachedStr = await AsyncStorage.getItem('@abucay_cached_family_members');
+                if (cachedStr) {
+                    const parsed = JSON.parse(cachedStr);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        setFamilyLocations(parsed);
+                    }
+                }
+                const lastTime = await getLastFetchTimestamp();
+                if (lastTime) setLastFetchTimestamp(lastTime);
+            } catch {}
         }
     };
 
@@ -807,7 +1016,7 @@ export default function FamilyTrackerScreen() {
                     longitude: lng,
                     accuracy: m.accuracy ?? 5,
                     speed: m.speed ?? 0,
-                    batteryLevel: m.battery != null && m.battery > 0 ? m.battery : null,
+                    batteryLevel: m.battery != null && m.battery > 0 ? (m.battery > 1 ? m.battery / 100 : m.battery) : null,
                     heading: m.heading != null && !isNaN(m.heading) ? m.heading : null,
                     isOnline: status.isActive,
                     lastUpdated: m.updated_at || new Date().toISOString(),
@@ -857,7 +1066,36 @@ export default function FamilyTrackerScreen() {
     }, [members3D, navigationRoute?.targetMemberId, myLocation]);
 
     const handleCheckIn = async (member: FamilyMember3D) => {
+        const isSelf = member.memberUserId === user?.id || member.id === user?.id;
         const targetUserId = member.memberUserId || member.id;
+
+        // 1. If self-target or single-device test, immediately trigger local test alert
+        if (isSelf) {
+            await triggerTestNDRRMCAlert('checkin', 0, userProfile?.name || 'Self Test');
+            return;
+        }
+
+        // 2. If member has not linked an account via pairing code, offer local test preview or SMS
+        if (!member.memberUserId) {
+            showAlert({
+                title: `${member.name} Not Paired Yet`,
+                message: `${member.name} has not linked their device via pairing code yet.\n\nWould you like to test how the "Are You Safe?" alert looks or send an SMS?`,
+                type: 'info',
+                buttons: [
+                    {
+                        text: 'Test Alert (Preview)',
+                        onPress: () => triggerTestNDRRMCAlert('checkin', 0, member.name),
+                    },
+                    ...(member.phone ? [{
+                        text: 'Send SMS Check-In',
+                        onPress: () => handleSendSMSCheckIn(member),
+                    }] : []),
+                    { text: 'Cancel', style: 'cancel' },
+                ],
+            });
+            return;
+        }
+
         try {
             await supabase.channel('family-broadcast').send({
                 type: 'broadcast',
@@ -871,6 +1109,9 @@ export default function FamilyTrackerScreen() {
                     to_member_id: targetUserId,
                     to_user_id: targetUserId,
                     to_row_id: member.id,
+                    to_name: member.name,
+                    to_phone: member.phone,
+                    is_test: false,
                     sent_at: new Date().toISOString(),
                 },
             });
@@ -879,6 +1120,19 @@ export default function FamilyTrackerScreen() {
                 message: `Safety check-in prompt sent to ${member.name}`,
                 type: 'success',
             });
+
+            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
+            if (member.memberUserId) {
+                sendEmergencyPushNotification(
+                    [member.memberUserId],
+                    '⚠️ EMERGENCY ALERT: ARE YOU SAFE?',
+                    `${userProfile?.name || 'Family Circle'} asked: Are you safe? Tap immediately to confirm your status.`,
+                    'checkin',
+                    userProfile?.name || 'Family Circle',
+                    myLocation?.lat,
+                    myLocation?.lng
+                ).catch(() => {});
+            }
         } catch (e) {
             console.warn('[CheckIn] Send error:', e);
             if (member.phone) {
@@ -1057,7 +1311,36 @@ export default function FamilyTrackerScreen() {
     };
 
     const handleLoudPing = async (member: FamilyMember3D) => {
+        const isSelf = member.memberUserId === user?.id || member.id === user?.id;
         const targetUserId = member.memberUserId || member.id;
+
+        // 1. If self-target or single-device test, immediately trigger local test alert
+        if (isSelf) {
+            await triggerTestNDRRMCAlert('loud_ping', 0, userProfile?.name || 'Self Test');
+            return;
+        }
+
+        // 2. If member has not linked an account via pairing code, offer local test preview or SMS
+        if (!member.memberUserId) {
+            showAlert({
+                title: `${member.name} Not Paired Yet`,
+                message: `${member.name} has not linked their device via pairing code yet.\n\nWould you like to test how the Loud Ping alert sounds or send an SMS?`,
+                type: 'warning',
+                buttons: [
+                    {
+                        text: 'Test Loud Ping (Preview)',
+                        onPress: () => triggerTestNDRRMCAlert('loud_ping', 0, member.name),
+                    },
+                    ...(member.phone ? [{
+                        text: 'Send SMS Alert',
+                        onPress: () => handleSendOfflineSMS(member.phone || '', member.name),
+                    }] : []),
+                    { text: 'Cancel', style: 'cancel' },
+                ],
+            });
+            return;
+        }
+
         try {
             await supabase.channel('family-broadcast').send({
                 type: 'broadcast',
@@ -1065,9 +1348,13 @@ export default function FamilyTrackerScreen() {
                 payload: {
                     from_user_id: user?.id,
                     from_name: userProfile?.name || 'Family Circle',
+                    from_avatar: userProfile?.avatar_url,
                     to_member_id: targetUserId,
                     to_user_id: targetUserId,
                     to_row_id: member.id,
+                    to_name: member.name,
+                    to_phone: member.phone,
+                    is_test: false,
                     sent_at: new Date().toISOString(),
                 },
             });
@@ -1077,6 +1364,17 @@ export default function FamilyTrackerScreen() {
                 message: `Triggered high-priority alarm sound and vibration on ${member.name}'s phone.`,
                 type: 'warning',
             });
+
+            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
+            if (member.memberUserId) {
+                sendEmergencyPushNotification(
+                    [member.memberUserId],
+                    '🚨 EMERGENCY ALERT (LOUD PING)',
+                    `${userProfile?.name || 'Family Circle'} triggered an emergency loud alarm on your phone! Tap to open alert box.`,
+                    'loud_ping',
+                    userProfile?.name || 'Family Circle'
+                ).catch(() => {});
+            }
         } catch (e) {
             console.warn('[LoudPing] Error:', e);
             if (member.phone) {
@@ -1126,6 +1424,44 @@ export default function FamilyTrackerScreen() {
             await queueSOSEvent(event);
         }
 
+        // Instant Realtime Peer Broadcast strictly to paired family circle members
+        try {
+            const targetFamilyUserIds = familyLocations
+                .map((m: any) => m.member_user_id)
+                .filter(Boolean);
+
+            await supabase.channel('family-broadcast').send({
+                type: 'broadcast',
+                event: 'sos_alert',
+                payload: {
+                    from_user_id: user.id,
+                    from_name: userProfile?.name || 'Family Member',
+                    from_avatar: userProfile?.avatar_url || null,
+                    lat: myLocation?.lat,
+                    lng: myLocation?.lng,
+                    battery: userBattery,
+                    target_family_user_ids: targetFamilyUserIds,
+                    triggered_at: new Date().toISOString(),
+                },
+            });
+
+            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
+            if (targetFamilyUserIds.length > 0) {
+                sendEmergencyPushNotification(
+                    targetFamilyUserIds,
+                    '🚨 EMERGENCY SOS ALERT!',
+                    `${userProfile?.name || 'A family member'} broadcasted an emergency SOS! Tap to open live distress map.`,
+                    'sos',
+                    userProfile?.name || 'Family Member',
+                    myLocation?.lat,
+                    myLocation?.lng,
+                    userBattery
+                ).catch(() => {});
+            }
+        } catch (e) {
+            console.warn('[FamilyTracker] Broadcast SOS error:', e);
+        }
+
         showAlert({
             title: '🚨 SOS BROADCASTED!',
             message: `Emergency alert with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
@@ -1167,6 +1503,17 @@ export default function FamilyTrackerScreen() {
 
     return (
         <View style={styles.container}>
+            {/* Floating Offline Notification Banner */}
+            {!isLocalOnline && (
+                <View style={[styles.floatingOfflineBanner, { top: insets.top + 8 }]}>
+                    <View style={styles.offlinePulseDot} />
+                    <Ionicons name="cloud-offline" size={13} color="#FFFFFF" />
+                    <Text style={styles.floatingOfflineText} numberOfLines={1}>
+                        Offline • Data {formatFromAgo(lastFetchTimestamp)} • Live GPS Active
+                    </Text>
+                </View>
+            )}
+
             {/* Map */}
             {loading ? (
                 <View style={styles.mapPlaceholder}>
@@ -1427,6 +1774,11 @@ export default function FamilyTrackerScreen() {
                                 const isSelected = selectedMemberId === item.id;
                                 const hasLocation = Boolean(item.lat && item.lng);
                                 const status = getTrackingStatus(item.updated_at, hasLocation);
+                                const rawBattery = item.battery;
+                                const batteryPct = rawBattery != null && rawBattery >= 0
+                                    ? Math.round(rawBattery > 1 ? rawBattery : rawBattery * 100)
+                                    : null;
+                                const speedKmh = item.speed && item.speed > 0.8 ? Math.round(item.speed * 3.6) : null;
 
                                 return (
                                     <TouchableOpacity
@@ -1461,10 +1813,38 @@ export default function FamilyTrackerScreen() {
                                         >
                                             {item.name.split(' ')[0]}
                                         </Text>
-                                        <View style={[styles.statusPill, { backgroundColor: status.color + '18' }]}>
-                                            <View style={[styles.statusMiniDot, { backgroundColor: status.color }]} />
-                                            <Text style={[styles.statusPillText, { color: status.color }]} numberOfLines={1}>
-                                                {status.isActive ? 'Active' : status.timeAgo}
+
+                                        {/* Battery Percentage Chip */}
+                                        {batteryPct !== null ? (
+                                            <View style={[
+                                                styles.batteryMiniBadge,
+                                                { backgroundColor: batteryPct <= 20 ? '#EF444418' : batteryPct <= 50 ? '#F59E0B18' : '#10B98118' }
+                                            ]}>
+                                                <Ionicons
+                                                    name={batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
+                                                    size={9}
+                                                    color={batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#10B981'}
+                                                />
+                                                <Text style={[
+                                                    styles.batteryMiniText,
+                                                    { color: batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#047857' }
+                                                ]}>
+                                                    {batteryPct}%
+                                                </Text>
+                                            </View>
+                                        ) : null}
+
+                                        {/* Live Activity & Speed Indicator (From ... ago) */}
+                                        <View style={[styles.statusPill, { backgroundColor: isLocalOnline ? (status.color + '18') : '#F1F5F9' }]}>
+                                            <View style={[styles.statusMiniDot, { backgroundColor: isLocalOnline ? status.color : '#94A3B8' }]} />
+                                            <Text style={[styles.statusPillText, { color: isLocalOnline ? status.color : '#64748B' }]} numberOfLines={1}>
+                                                {!isLocalOnline
+                                                    ? status.fromAgo
+                                                    : speedKmh
+                                                    ? `${speedKmh} km/h`
+                                                    : status.isActive
+                                                    ? 'Active'
+                                                    : status.fromAgo}
                                             </Text>
                                         </View>
                                     </TouchableOpacity>
@@ -1473,15 +1853,19 @@ export default function FamilyTrackerScreen() {
                         />
 
                         <View style={styles.liveIndicator}>
-                            <View style={[styles.liveDot, { backgroundColor: activeCount > 0 ? Colors.secondary : Colors.textMuted }]} />
-                            <Text style={styles.liveText}>
-                                {activeCount} of {familyLocations.length + (myLocation ? 1 : 0)} Active • Live Tracking
+                            <View style={[styles.liveDot, { backgroundColor: isLocalOnline ? (activeCount > 0 ? Colors.secondary : Colors.textMuted) : '#F59E0B' }]} />
+                            <Text style={[styles.liveText, !isLocalOnline && { color: '#B45309' }]}>
+                                {isLocalOnline
+                                    ? `${activeCount} of ${familyLocations.length + (myLocation ? 1 : 0)} Active • Live Tracking`
+                                    : `Offline • Local GPS Tracking Active • Data ${formatFromAgo(lastFetchTimestamp)}`}
                             </Text>
                         </View>
 
-                        <TouchableOpacity style={[styles.shareBtn, { backgroundColor: Colors.secondary }]} onPress={fetchFamilyLocations}>
+                        <TouchableOpacity style={[styles.shareBtn, { backgroundColor: isLocalOnline ? Colors.secondary : '#475569' }]} onPress={fetchFamilyLocations}>
                             <Ionicons name="refresh" size={18} color={Colors.white} />
-                            <Text style={styles.shareBtnText}>Refresh Family Locations</Text>
+                            <Text style={styles.shareBtnText}>
+                                {isLocalOnline ? 'Refresh Family Locations' : 'Reload Cached Data (Offline)'}
+                            </Text>
                         </TouchableOpacity>
                     </>
                 )}
@@ -1492,6 +1876,38 @@ export default function FamilyTrackerScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: Colors.background },
+    floatingOfflineBanner: {
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        zIndex: 9999,
+        backgroundColor: '#0F172AEE',
+        borderRadius: 20,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.35,
+        shadowRadius: 6,
+        elevation: 10,
+        borderWidth: 1,
+        borderColor: '#EF444450',
+    },
+    offlinePulseDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#EF4444',
+    },
+    floatingOfflineText: {
+        color: '#FFFFFF',
+        fontSize: 11,
+        fontWeight: '700',
+    },
     header: {
         backgroundColor: Colors.tracker,
         paddingTop: 48, paddingBottom: Spacing.lg, paddingHorizontal: Spacing.lg,
@@ -1630,7 +2046,7 @@ const styles = StyleSheet.create({
         letterSpacing: 0.5,
     },
     familyList: { gap: 14, paddingVertical: 8 },
-    memberCard: { alignItems: 'center', width: 78 },
+    memberCard: { alignItems: 'center', width: 84 },
     memberCardActive: {
         transform: [{ scale: 1.05 }],
     },
@@ -1682,6 +2098,19 @@ const styles = StyleSheet.create({
     statusPillText: {
         fontSize: 9,
         fontWeight: '700',
+    },
+    batteryMiniBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+        paddingHorizontal: 6,
+        paddingVertical: 1.5,
+        borderRadius: BorderRadius.full,
+        marginTop: 2,
+    },
+    batteryMiniText: {
+        fontSize: 9,
+        fontWeight: '800',
     },
     markerContainer: {
         alignItems: 'center',

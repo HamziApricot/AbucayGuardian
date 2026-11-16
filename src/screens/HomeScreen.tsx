@@ -11,8 +11,6 @@ import { useAuth } from '../context/AuthContext';
 import { HOTLINES } from '../constants/hotlines';
 import { PROCEDURES } from '../constants/procedures';
 
-import { useAlert } from '../context/AlertContext';
-
 const { width } = Dimensions.get('window');
 
 type Props = { navigation: any };
@@ -29,10 +27,7 @@ const QuickCard = ({ icon, label, color, onPress }: any) => (
 export default function HomeScreen({ navigation }: Props) {
     const { userProfile } = useAuth();
     const insets = useSafeAreaInsets();
-    const { showAlert } = useAlert();
     const pulseAnim = useRef(new Animated.Value(1)).current;
-
-    const [familyMemberIds, setFamilyMemberIds] = useState<string[]>([]);
 
     React.useEffect(() => {
         const pulse = Animated.loop(
@@ -43,41 +38,10 @@ export default function HomeScreen({ navigation }: Props) {
         );
         pulse.start();
 
-        fetchFamilyIds();
-
-        // Subscribe to SOS alerts
-        const channel = supabase
-            .channel('global-sos')
-            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sos_events' }, (payload: any) => {
-                const newSOS = payload.new;
-                // Only alert if the user is in our family list
-                if (familyMemberIds.includes(newSOS.user_id)) {
-                    showAlert({
-                        title: '🚨 EMERGENCY ALERT',
-                        message: 'A family member has triggered an SOS! Check the Tracker immediately.',
-                        type: 'error',
-                        buttons: [
-                            { text: 'View Tracker', onPress: () => navigation.navigate('Tracker') },
-                            { text: 'Dismiss', style: 'cancel' }
-                        ]
-                    });
-                    Vibration.vibrate([0, 500, 200, 500]);
-                }
-            })
-            .subscribe();
-
         return () => {
             pulse.stop();
-            supabase.removeChannel(channel);
         };
-    }, [familyMemberIds]);
-
-    const fetchFamilyIds = async () => {
-        const { data } = await supabase.from('family_members').select('member_user_id');
-        if (data) {
-            setFamilyMemberIds(data.map((m: any) => m.member_user_id).filter(Boolean));
-        }
-    };
+    }, []);
 
     const topHotlines = HOTLINES.slice(0, 3);
 

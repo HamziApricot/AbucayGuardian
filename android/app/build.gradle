@@ -86,7 +86,7 @@ apply from: "${background_geolocation.projectDir}/app.gradle"
 // @generated end react-native-background-geolocation-project
 
 android {
-    ndkVersion rootProject.ext.ndkVersion
+    ndkVersion rootProject.ext.has('ndkVersion') ? rootProject.ext.ndkVersion : "27.1.12297006"
 
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
@@ -102,7 +102,7 @@ android {
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         externalNativeBuild {
             cmake {
-                arguments "-DCMAKE_OBJECT_PATH_MAX=180"
+                arguments "-DCMAKE_OBJECT_PATH_MAX=180", "-DANDROID_STL=c++_shared"
             }
         }
     }

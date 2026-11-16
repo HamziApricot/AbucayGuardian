@@ -4,6 +4,28 @@ export interface TrackingStatus {
     timeAgo: string;        // "Active now" | "15m ago" | "2h ago" | "3d ago" | "No location"
     inactiveDuration: string; // "Active now" | "Inactive for 15m" | "Inactive for 2h" | "Never shared location"
     color: string;          // '#22C55E' (green) | '#F59E0B' (amber) | '#94A3B8' (gray)
+    fromAgo: string;        // "from just now" | "from 15m ago" | "from 2h ago" | "no location"
+}
+
+/**
+ * Formats a timestamp into an intuitive "from ... ago" string.
+ * Example: "from just now", "from 5m ago", "from 2h ago", "from 1d ago"
+ */
+export function formatFromAgo(updatedAt?: string | null): string {
+    if (!updatedAt) return 'from unknown time';
+    const updatedDate = new Date(updatedAt);
+    const now = new Date();
+    const diffMs = now.getTime() - updatedDate.getTime();
+    if (isNaN(diffMs)) return 'from unknown time';
+    if (diffMs < 0 || diffMs < 60000) return 'from just now';
+
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMin / 60);
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMin < 60) return `from ${diffMin}m ago`;
+    if (diffHours < 24) return `from ${diffHours}h ago`;
+    return `from ${diffDays}d ago`;
 }
 
 /**
@@ -18,6 +40,7 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
             timeAgo: 'No signal',
             inactiveDuration: 'Never shared location',
             color: '#94A3B8',
+            fromAgo: 'no location',
         };
     }
 
@@ -33,17 +56,19 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
             timeAgo: 'Unknown',
             inactiveDuration: 'Unknown',
             color: '#94A3B8',
+            fromAgo: 'from unknown time',
         };
     }
 
     // If timestamp is slightly in the future due to clock skew, treat as active now
-    if (diffMs < 0) {
+    if (diffMs < 0 || diffMs < 60000) {
         return {
             isActive: true,
             label: 'Active',
             timeAgo: 'Active now',
             inactiveDuration: 'Active now',
             color: '#22C55E',
+            fromAgo: 'from just now',
         };
     }
 
@@ -51,6 +76,25 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
     const diffMin = Math.floor(diffSec / 60);
     const diffHours = Math.floor(diffMin / 60);
     const diffDays = Math.floor(diffHours / 24);
+
+    let timeAgo = '';
+    let duration = '';
+    let fromAgo = '';
+
+    if (diffMin < 60) {
+        duration = `${diffMin}m`;
+        timeAgo = `${diffMin}m ago`;
+        fromAgo = `from ${diffMin}m ago`;
+    } else if (diffHours < 24) {
+        const remainingMin = diffMin % 60;
+        duration = remainingMin > 0 ? `${diffHours}h ${remainingMin}m` : `${diffHours}h`;
+        timeAgo = `${diffHours}h ago`;
+        fromAgo = `from ${diffHours}h ago`;
+    } else {
+        duration = `${diffDays}d`;
+        timeAgo = `${diffDays}d ago`;
+        fromAgo = `from ${diffDays}d ago`;
+    }
 
     // Active threshold: updated within the last 5 minutes (Active now)
     if (diffMin < 5) {
@@ -60,6 +104,7 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
             timeAgo: 'Active now',
             inactiveDuration: 'Active now',
             color: '#22C55E',
+            fromAgo: fromAgo || 'from just now',
         };
     }
 
@@ -72,22 +117,8 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
             timeAgo: `${diffMin}m ago`,
             inactiveDuration: 'Active (Stationary)',
             color: '#22C55E',
+            fromAgo,
         };
-    }
-
-    let timeAgo = '';
-    let duration = '';
-
-    if (diffMin < 60) {
-        duration = `${diffMin}m`;
-        timeAgo = `${diffMin}m ago`;
-    } else if (diffHours < 24) {
-        const remainingMin = diffMin % 60;
-        duration = remainingMin > 0 ? `${diffHours}h ${remainingMin}m` : `${diffHours}h`;
-        timeAgo = `${diffHours}h ago`;
-    } else {
-        duration = `${diffDays}d`;
-        timeAgo = `${diffDays}d ago`;
     }
 
     return {
@@ -96,6 +127,7 @@ export function getTrackingStatus(updatedAt?: string | null, hasCoordinates: boo
         timeAgo,
         inactiveDuration: `Inactive for ${duration}`,
         color: diffHours < 1 ? '#F59E0B' : '#94A3B8',
+        fromAgo,
     };
 }
 

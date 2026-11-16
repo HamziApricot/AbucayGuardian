@@ -1,19 +1,21 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
     View, Text, StyleSheet, FlatList, TouchableOpacity,
     Modal, TextInput, ActivityIndicator, Linking, Image, ScrollView,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAlert } from '../context/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { FamilyMember } from '../types';
-import { getTrackingStatus } from '../utils/tracking';
+import { getTrackingStatus, formatFromAgo } from '../utils/tracking';
 
 const RELATIONSHIPS = ['Parent', 'Sibling', 'Child', 'Spouse', 'Relative', 'Friend', 'Other'];
 const CATEGORY_TABS = ['All', 'Parent', 'Sibling', 'Child', 'Spouse', 'Relative', 'Friend', 'Other'];
@@ -49,6 +51,50 @@ export default function FamilyMembersScreen({ navigation }: any) {
     const [loading, setLoading] = useState(true);
     const [selectedCategory, setSelectedCategory] = useState<string>('All');
     const [tick, setTick] = useState(0);
+    const [isLocalOnline, setIsLocalOnline] = useState(true);
+    const wasOnlineRef = React.useRef(true);
+
+    // Network monitor for offline transitions
+    useEffect(() => {
+        NetInfo.fetch().then((state) => {
+            const online = Boolean(state.isConnected && state.isInternetReachable !== false);
+            setIsLocalOnline(online);
+            wasOnlineRef.current = online;
+        });
+
+        const unsubscribe = NetInfo.addEventListener(async (state) => {
+            const currentlyOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
+            setIsLocalOnline(currentlyOnline);
+
+            if (wasOnlineRef.current && !currentlyOnline) {
+                showToast({
+                    message: '📡 Network lost. Showing latest cached family circle.',
+                    type: 'warning',
+                });
+                try {
+                    const cached = await AsyncStorage.getItem('@abucay_cached_family_members');
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            setMembers(parsed);
+                        }
+                    }
+                } catch {}
+            }
+
+            if (!wasOnlineRef.current && currentlyOnline) {
+                showToast({
+                    message: '📶 Connection restored. Syncing family members...',
+                    type: 'success',
+                });
+                fetchMembers();
+            }
+
+            wasOnlineRef.current = currentlyOnline;
+        });
+
+        return () => unsubscribe();
+    }, []);
 
     // UI States for Pairing
     const [modalVisible, setModalVisible] = useState(false);
@@ -70,6 +116,15 @@ export default function FamilyMembersScreen({ navigation }: any) {
         }, 15000);
         return () => clearInterval(interval);
     }, []);
+
+    // Refetch latest family members and personal info whenever screen is focused
+    useFocusEffect(
+        useCallback(() => {
+            if (user?.id) {
+                fetchMembers();
+            }
+        }, [user?.id])
+    );
 
     useEffect(() => {
         if (!user?.id) return;
@@ -102,7 +157,19 @@ export default function FamilyMembersScreen({ navigation }: any) {
             })
             .subscribe();
 
-        // 2. Listen for tracker table updates
+        // 2. Listen for users table updates (syncs profile name/phone/avatar changes in realtime)
+        const usersChannel = supabase
+            .channel(`family-users-sync-${user.id}`)
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'users',
+            }, () => {
+                fetchMembers();
+            })
+            .subscribe();
+
+        // 3. Listen for tracker table updates
         const trackerChannel = supabase
             .channel(`family-tracker-sync-${user.id}`)
             .on('postgres_changes', {
@@ -114,7 +181,7 @@ export default function FamilyMembersScreen({ navigation }: any) {
             })
             .subscribe();
 
-        // 3. Listen for live peer-to-peer location broadcasts
+        // 4. Listen for live peer-to-peer location and profile broadcasts
         const broadcastChannel = supabase
             .channel('family-broadcast')
             .on('broadcast', { event: 'location_update' }, ({ payload }) => {
@@ -134,10 +201,28 @@ export default function FamilyMembersScreen({ navigation }: any) {
                     })
                 );
             })
+            .on('broadcast', { event: 'profile_updated' }, ({ payload }) => {
+                if (!payload || !payload.user_id) return;
+                setMembers((prev) =>
+                    prev.map((m) => {
+                        if (m.member_user_id === payload.user_id) {
+                            return {
+                                ...m,
+                                name: payload.name ?? m.name,
+                                phone: payload.phone ?? m.phone,
+                                avatar_url: payload.avatar_url !== undefined ? payload.avatar_url : m.avatar_url,
+                            };
+                        }
+                        return m;
+                    })
+                );
+                fetchMembers();
+            })
             .subscribe();
 
         return () => {
             supabase.removeChannel(memberChannel);
+            supabase.removeChannel(usersChannel);
             supabase.removeChannel(trackerChannel);
             supabase.removeChannel(broadcastChannel);
         };
@@ -146,22 +231,51 @@ export default function FamilyMembersScreen({ navigation }: any) {
     const fetchMembers = async () => {
         if (!user) return;
         try {
-            // Join with users table to get latest avatar_url, lat, lng, and updated_at
-            const { data, error } = await supabase
+            // 1. Fetch direct family members (added by this user)
+            const { data: directMembers, error: directError } = await supabase
                 .from('family_members')
-                .select('*, member:users!member_user_id(avatar_url, lat, lng, updated_at)')
+                .select('*, member:users!member_user_id(id, name, phone, avatar_url, lat, lng, updated_at)')
                 .eq('user_id', user.id);
 
-            if (error) {
-                console.error('[FamilyMembers] Fetch error:', error);
-                setLoading(false);
-                return;
+            if (directError) {
+                console.error('[FamilyMembers] Fetch direct error:', directError);
             }
 
-            const rawMembers = (data as any[]) ?? [];
-            const memberUserIds = rawMembers.filter((m) => m.member_user_id).map((m) => m.member_user_id);
+            let allRawMembers: any[] = (directMembers as any[]) || [];
 
-            // Fetch latest tracker status for each member
+            // 2. Fetch reciprocal family members (where current user was added by someone else)
+            try {
+                const { data: reverseMembers } = await supabase
+                    .from('family_members')
+                    .select('*, member:users!user_id(id, name, phone, avatar_url, lat, lng, updated_at)')
+                    .eq('member_user_id', user.id);
+
+                if (reverseMembers && reverseMembers.length > 0) {
+                    reverseMembers.forEach((rm: any) => {
+                        const exists = allRawMembers.some(
+                            (m: any) => (m.member_user_id === rm.user_id) || (m.user_id === rm.user_id)
+                        );
+                        if (!exists) {
+                            allRawMembers.push({
+                                ...rm,
+                                member_user_id: rm.user_id,
+                                name: rm.member?.name || rm.name,
+                                phone: rm.member?.phone || rm.phone,
+                                avatar_url: rm.member?.avatar_url || rm.avatar_url,
+                                relationship: rm.relationship || 'Family',
+                            });
+                        }
+                    });
+                }
+            } catch (revErr) {
+                // Non-blocking
+            }
+
+            const memberUserIds = allRawMembers
+                .map((m: any) => m.member_user_id)
+                .filter((id: any) => Boolean(id) && id !== user.id);
+
+            // 3. Fetch latest tracker status for each member
             let trackerMap: Record<string, any> = {};
             if (memberUserIds.length > 0) {
                 try {
@@ -177,34 +291,78 @@ export default function FamilyMembersScreen({ navigation }: any) {
                 } catch { }
             }
 
-            // Resolve the freshest timestamp between tracker, users table, and family_members
-            const resolvedMembers: FamilyMember[] = rawMembers.map((m) => {
+            // 4. Fetch latest live profile details from users table
+            let usersData: any[] = [];
+            if (memberUserIds.length > 0) {
+                try {
+                    const { data: uData } = await supabase
+                        .from('users')
+                        .select('id, name, phone, avatar_url, lat, lng, updated_at')
+                        .in('id', memberUserIds);
+                    if (uData) usersData = uData;
+                } catch { }
+            }
+
+            // 5. Fetch location_history fallback for battery
+            const historyMap: Record<string, any> = {};
+            if (memberUserIds.length > 0) {
+                try {
+                    const { data: histData } = await supabase
+                        .from('location_history')
+                        .select('user_id, battery, accuracy, speed, captured_at')
+                        .in('user_id', memberUserIds)
+                        .order('captured_at', { ascending: false })
+                        .limit(memberUserIds.length * 3);
+                    if (histData) {
+                        histData.forEach((h: any) => {
+                            if (!historyMap[h.user_id]) {
+                                historyMap[h.user_id] = h;
+                            }
+                        });
+                    }
+                } catch { }
+            }
+
+            // 6. Resolve freshest identity, coordinates, battery percentage and timestamp
+            const resolvedMembers: FamilyMember[] = allRawMembers.map((m) => {
                 const loc = trackerMap[m.member_user_id];
-                const userFallback = m.member;
+                const liveUser = usersData.find((u: any) => u.id === m.member_user_id) || m.member;
+                const hist = historyMap[m.member_user_id];
 
-                let resolvedLat = loc?.lat ?? userFallback?.lat ?? m.lat;
-                let resolvedLng = loc?.lng ?? userFallback?.lng ?? m.lng;
-                let resolvedUpdatedAt = loc?.updated_at || userFallback?.updated_at || m.updated_at;
+                let resolvedLat = loc?.lat ?? liveUser?.lat ?? m.lat;
+                let resolvedLng = loc?.lng ?? liveUser?.lng ?? m.lng;
+                let resolvedUpdatedAt = loc?.updated_at || liveUser?.updated_at || m.updated_at;
 
-                if (loc?.updated_at && userFallback?.updated_at) {
+                if (loc?.updated_at && liveUser?.updated_at) {
                     const trackerTime = new Date(loc.updated_at).getTime();
-                    const userTime = new Date(userFallback.updated_at).getTime();
+                    const userTime = new Date(liveUser.updated_at).getTime();
                     if (!isNaN(userTime) && userTime > trackerTime) {
-                        resolvedLat = userFallback.lat ?? resolvedLat;
-                        resolvedLng = userFallback.lng ?? resolvedLng;
-                        resolvedUpdatedAt = userFallback.updated_at;
+                        resolvedLat = liveUser.lat ?? resolvedLat;
+                        resolvedLng = liveUser.lng ?? resolvedLng;
+                        resolvedUpdatedAt = liveUser.updated_at;
                     }
                 }
 
-                const resolvedBattery = loc?.battery ?? m.battery ?? null;
+                // Battery normalization (guaranteed 0.0 - 1.0 or null)
+                const rawBattery = loc?.battery ?? hist?.battery ?? m.battery ?? null;
+                let resolvedBattery: number | null = null;
+                if (rawBattery != null && rawBattery >= 0) {
+                    resolvedBattery = rawBattery > 1 ? rawBattery / 100 : rawBattery;
+                }
 
                 return {
                     ...m,
+                    name: liveUser?.name || m.name,
+                    phone: liveUser?.phone || m.phone,
+                    avatar_url: liveUser?.avatar_url || m.avatar_url,
                     lat: resolvedLat,
                     lng: resolvedLng,
+                    accuracy: loc?.accuracy ?? hist?.accuracy ?? m.accuracy ?? 5,
+                    speed: loc?.speed ?? hist?.speed ?? m.speed ?? 0,
                     battery: resolvedBattery,
+                    heading: loc?.heading ?? hist?.heading ?? m.heading ?? null,
                     updated_at: resolvedUpdatedAt,
-                    avatar_url: m.member?.avatar_url || m.avatar_url,
+                    relationship: m.relationship || 'Family',
                 };
             });
 
@@ -464,6 +622,15 @@ export default function FamilyMembersScreen({ navigation }: any) {
                         <Text style={styles.actionPillText}>My Code</Text>
                     </TouchableOpacity>
                 </View>
+
+                {!isLocalOnline && (
+                    <View style={styles.offlineMembersBanner}>
+                        <Ionicons name="cloud-offline" size={13} color="#FFFFFF" />
+                        <Text style={styles.offlineMembersBannerText}>
+                            Offline Mode • Showing latest cached family circle ({members.length} members)
+                        </Text>
+                    </View>
+                )}
             </View>
 
             {/* Relationship Category Filter Tabs */}
@@ -612,16 +779,16 @@ export default function FamilyMembersScreen({ navigation }: any) {
                                             {item.phone || 'No phone number'}
                                         </Text>
 
-                                        {/* Last Active Time Row */}
+                                        {/* Last Active Time Row (From ... ago) */}
                                         <View style={styles.activeTimeRow}>
-                                            <View style={[styles.activeDot, { backgroundColor: status.color }]} />
+                                            <View style={[styles.activeDot, { backgroundColor: isLocalOnline ? status.color : '#94A3B8' }]} />
                                             <Text
                                                 style={[
                                                     styles.activeTimeText,
-                                                    { color: status.isActive ? '#16A34A' : Colors.textMuted },
+                                                    { color: isLocalOnline && status.isActive ? '#16A34A' : Colors.textMuted },
                                                 ]}
                                             >
-                                                {status.isActive ? 'Active now' : `Active ${status.timeAgo}`}
+                                                {!isLocalOnline ? status.fromAgo : status.isActive ? 'Active now' : status.fromAgo}
                                             </Text>
 
                                             {item.battery !== null && item.battery !== undefined && (
@@ -906,6 +1073,24 @@ const styles = StyleSheet.create({
     activePillText: { fontSize: 10, fontWeight: '700', color: '#86EFAC' },
     headerIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
     headerActions: { flexDirection: 'row', gap: 12 },
+    offlineMembersBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        backgroundColor: '#0F172ACC',
+        paddingVertical: 5,
+        paddingHorizontal: 12,
+        borderRadius: 12,
+        marginTop: 10,
+        borderWidth: 1,
+        borderColor: '#EF444450',
+    },
+    offlineMembersBannerText: {
+        color: '#FFFFFF',
+        fontSize: 11,
+        fontWeight: '700',
+    },
     actionPill: {
         flexDirection: 'row', alignItems: 'center', gap: 8,
         backgroundColor: 'rgba(255,255,255,0.18)',
