@@ -243,7 +243,7 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun moveToBackground(promise: Promise) {
         try {
-            val activity = currentActivity
+            val activity = reactApplicationContext.currentActivity
             if (activity != null) {
                 val moved = activity.moveTaskToBack(true)
                 promise.resolve(moved)
@@ -264,7 +264,7 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun startKioskMode(promise: Promise) {
         try {
-            val activity = currentActivity
+            val activity = reactApplicationContext.currentActivity
             if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 activity.startLockTask()
                 promise.resolve(true)
@@ -282,7 +282,7 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun stopKioskMode(promise: Promise) {
         try {
-            val activity = currentActivity
+            val activity = reactApplicationContext.currentActivity
             if (activity != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 activity.stopLockTask()
                 promise.resolve(true)

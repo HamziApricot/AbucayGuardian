@@ -14,6 +14,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import CountryCodePicker from '../components/CountryCodePicker';
 import PermissionsOnboardingScreen from './PermissionsOnboardingScreen';
+import { normalizePhoneNumber } from '../utils/phone';
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
@@ -39,7 +40,7 @@ export default function ProfileScreen() {
         setSaving(true);
         try {
             const trimmedName = name.trim();
-            const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
+            const fullPhone = normalizePhoneNumber(phone, countryCode);
             const nowIso = new Date().toISOString();
 
             // 1. Update personal row in users table

@@ -4,6 +4,7 @@ import { Session, User } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { UserProfile } from '../types';
+import { normalizePhoneNumber, cleanOtpCode } from '../utils/phone';
 
 const CACHED_PROFILE_KEY = '@abucay_cached_user_profile';
 const ONBOARDED_KEY = '@abucay_permissions_onboarded_v1';
@@ -175,14 +176,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const sendOtp = async (phone: string) => {
-        const { error } = await supabase.auth.signInWithOtp({ phone: phone.trim() });
+        const cleanPhone = normalizePhoneNumber(phone);
+        const { error } = await supabase.auth.signInWithOtp({ phone: cleanPhone });
         return { error: error?.message ?? null };
     };
 
     const verifyOtp = async (phone: string, token: string, name?: string) => {
+        const cleanPhone = normalizePhoneNumber(phone);
+        const cleanToken = cleanOtpCode(token);
+
+        if (!cleanToken || cleanToken.length < 6) {
+            return { error: 'Please enter a valid 6-digit verification code.' };
+        }
+
         const { data, error } = await supabase.auth.verifyOtp({
-            phone: phone.trim(),
-            token: token.trim(),
+            phone: cleanPhone,
+            token: cleanToken,
             type: 'sms',
         });
 
@@ -198,7 +207,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             if (!profile) {
                 if (name) {
-                    await createProfile(name, phone);
+                    await createProfile(name, cleanPhone);
                     return { error: null, isNewUser: false };
                 }
                 return { error: null, isNewUser: true };
@@ -213,13 +222,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!user) return { error: 'No authenticated user' };
 
         const trimmedName = name.trim();
-        const trimmedPhone = phone.trim();
+        const cleanPhone = normalizePhoneNumber(phone);
         const pairingCode = generatePairingCode();
 
         const { error } = await supabase.from('users').insert({
             id: user.id,
             name: trimmedName,
-            phone: trimmedPhone,
+            phone: cleanPhone,
             pairing_code: pairingCode,
             updated_at: new Date().toISOString(),
         });
@@ -234,7 +243,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const newProfile: UserProfile = {
             id: user.id,
             name: trimmedName,
-            phone: trimmedPhone,
+            phone: cleanPhone,
             pairing_code: pairingCode,
             updated_at: new Date().toISOString(),
         };

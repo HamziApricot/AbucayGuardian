@@ -15,17 +15,10 @@ import { supabase } from '../services/supabase';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { normalizePhoneNumber, cleanOtpCode } from '../utils/phone';
 
 // Format input into E.164 (+639XXXXXXXXX)
-export const formatE164 = (num: string) => {
-  let cleaned = num.replace(/\D/g, '');
-  if (cleaned.startsWith('09')) {
-    cleaned = '63' + cleaned.substring(1);
-  } else if (cleaned.startsWith('9') && cleaned.length === 10) {
-    cleaned = '63' + cleaned;
-  }
-  return '+' + cleaned;
-};
+export const formatE164 = (num: string) => normalizePhoneNumber(num);
 
 export function PhoneAuthScreen({ navigation }: { navigation?: any }) {
   const [phone, setPhone] = useState('');
@@ -55,7 +48,8 @@ export function PhoneAuthScreen({ navigation }: { navigation?: any }) {
   };
 
   const handleVerifyOtp = async () => {
-    if (!token.trim()) {
+    const cleanedToken = cleanOtpCode(token);
+    if (!cleanedToken || cleanedToken.length < 6) {
       Alert.alert('Code Required', 'Please enter the 6-digit verification code.');
       return;
     }
@@ -64,10 +58,14 @@ export function PhoneAuthScreen({ navigation }: { navigation?: any }) {
       const e164 = formatE164(phone);
       const { data, error } = await supabase.auth.verifyOtp({
         phone: e164,
-        token: token.trim(),
+        token: cleanedToken,
         type: 'sms',
       });
       if (error) throw error;
+
+      if (auth?.refreshProfile) {
+        await auth.refreshProfile();
+      }
 
       // Check if user has an existing profile in users table
       if (data.user) {
@@ -84,7 +82,7 @@ export function PhoneAuthScreen({ navigation }: { navigation?: any }) {
         }
       }
 
-      Alert.alert('Success', `Welcome user: ${data.user?.id}`);
+      Alert.alert('Success', 'Verification successful! Logging you in...');
     } catch (err: any) {
       Alert.alert('Verification Failed', err.message || 'Invalid or expired OTP code.');
     } finally {
@@ -191,11 +189,11 @@ export function PhoneAuthScreen({ navigation }: { navigation?: any }) {
                 <Ionicons name="key-outline" size={20} color={Colors.textLight} style={styles.fieldIcon} />
                 <TextInput
                   value={token}
-                  onChangeText={setToken}
+                  onChangeText={(text) => setToken(cleanOtpCode(text))}
                   placeholder="123456"
                   placeholderTextColor={Colors.textMuted}
                   keyboardType="number-pad"
-                  maxLength={6}
+                  maxLength={10}
                   style={[styles.textInput, styles.otpInput]}
                   autoFocus
                 />

@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius } from '../../constants/theme';
 import { useAuth } from '../../context/AuthContext';
 import CountryCodePicker from '../../components/CountryCodePicker';
+import { normalizePhoneNumber, cleanOtpCode } from '../../utils/phone';
 
 type Props = { navigation: any };
 
@@ -39,7 +40,7 @@ export default function RegisterScreen({ navigation }: Props) {
     }, [session, userProfile, user]);
 
     const handleRequestOtp = async () => {
-        if (!phone) {
+        if (!phone.trim()) {
             showAlert({
                 title: 'Missing Phone',
                 message: 'Please enter your phone number.',
@@ -48,7 +49,7 @@ export default function RegisterScreen({ navigation }: Props) {
             return;
         }
         setLoading(true);
-        const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
+        const fullPhone = normalizePhoneNumber(phone, countryCode);
         const { error } = await sendOtp(fullPhone);
         setLoading(false);
         if (error) {
@@ -63,17 +64,18 @@ export default function RegisterScreen({ navigation }: Props) {
     };
 
     const handleVerifyOtp = async () => {
-        if (!code) {
+        const cleanedCode = cleanOtpCode(code);
+        if (!cleanedCode || cleanedCode.length < 6) {
             showAlert({
                 title: 'Missing Code',
-                message: 'Please enter the verification code.',
+                message: 'Please enter the 6-digit verification code.',
                 type: 'warning'
             });
             return;
         }
         setLoading(true);
-        const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
-        const { error, isNewUser } = await verifyOtp(fullPhone, code.trim());
+        const fullPhone = normalizePhoneNumber(phone, countryCode);
+        const { error, isNewUser } = await verifyOtp(fullPhone, cleanedCode);
         setLoading(false);
 
         if (error) {
@@ -93,7 +95,7 @@ export default function RegisterScreen({ navigation }: Props) {
     };
 
     const handleCompleteSetup = async () => {
-        if (!name) {
+        if (!name.trim()) {
             showAlert({
                 title: 'Missing Name',
                 message: 'Please enter your full name.',
@@ -102,7 +104,7 @@ export default function RegisterScreen({ navigation }: Props) {
             return;
         }
         setLoading(true);
-        const fullPhone = `${countryCode}${phone.replace(/^0+/, '')}`;
+        const fullPhone = normalizePhoneNumber(phone, countryCode);
         const { error } = await createProfile(name.trim(), fullPhone);
         setLoading(false);
         if (error) {
@@ -161,9 +163,9 @@ export default function RegisterScreen({ navigation }: Props) {
                                     placeholder="123456"
                                     placeholderTextColor={Colors.textMuted}
                                     value={code}
-                                    onChangeText={setCode}
+                                    onChangeText={(text) => setCode(cleanOtpCode(text))}
                                     keyboardType="number-pad"
-                                    maxLength={6}
+                                    maxLength={10}
                                 />
                             </View>
                         </View>
