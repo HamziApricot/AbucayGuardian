@@ -33,6 +33,7 @@ export default function PermissionsOnboardingScreen({
   const [notificationGranted, setNotificationGranted] = useState(false);
   const [locationGranted, setLocationGranted] = useState(false);
   const [activityGranted, setActivityGranted] = useState(false);
+  const [smsGranted, setSmsGranted] = useState(false);
   const [batteryGranted, setBatteryGranted] = useState(false);
   const [overlayGranted, setOverlayGranted] = useState(false);
   const [popupsGranted, setPopupsGranted] = useState(false);
@@ -61,11 +62,16 @@ export default function PermissionsOnboardingScreen({
             PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION
           );
           setActivityGranted(hasActivity);
+          const hasSms = await PermissionsAndroid.check(
+            PermissionsAndroid.PERMISSIONS.SEND_SMS
+          );
+          setSmsGranted(hasSms);
         } catch {
           // ignore
         }
       } else {
         setActivityGranted(true);
+        setSmsGranted(true);
       }
 
       // 4. Battery Optimization
@@ -188,6 +194,32 @@ export default function PermissionsOnboardingScreen({
       }
     } else {
       setActivityGranted(true);
+    }
+  };
+
+  // Request: Direct Emergency SMS
+  const handleRequestSms = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const { PermissionsAndroid } = require('react-native');
+        const res = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.SEND_SMS,
+          {
+            title: 'Direct Emergency SMS',
+            message: 'Abucay Guardian needs permission to send direct emergency SMS alerts to your individual family members without opening external apps.',
+            buttonPositive: 'Allow',
+          }
+        );
+        const granted = res === PermissionsAndroid.RESULTS.GRANTED;
+        setSmsGranted(granted);
+        if (!granted) {
+          Linking.openSettings();
+        }
+      } catch {
+        Linking.openSettings();
+      }
+    } else {
+      setSmsGranted(true);
     }
   };
 
@@ -487,6 +519,40 @@ export default function PermissionsOnboardingScreen({
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Direct Emergency SMS */}
+        {Platform.OS === 'android' && (
+          <View style={styles.card}>
+            <View style={[styles.iconCircle, { backgroundColor: '#ECFDF5' }]}>
+              <Ionicons name="chatbox-ellipses" size={22} color="#10B981" />
+            </View>
+            <View style={styles.cardBody}>
+              <View style={styles.tagRow}>
+                <Text style={styles.cardTitle}>Direct Emergency SMS</Text>
+                <View style={[styles.subBadge, { backgroundColor: '#D1FAE5' }]}>
+                  <Text style={[styles.subBadgeText, { color: '#047857' }]}>No App Opening</Text>
+                </View>
+              </View>
+              <Text style={styles.cardDesc}>
+                Sends direct emergency distress texts to individual family members automatically without opening external messaging apps.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: '#10B981' }, smsGranted && styles.actionBtnDone]}
+              onPress={handleRequestSms}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={smsGranted ? 'checkmark-circle' : 'chevron-forward'}
+                size={18}
+                color={smsGranted ? '#16A34A' : '#FFFFFF'}
+              />
+              <Text style={[styles.actionBtnText, smsGranted && styles.actionBtnDoneText]}>
+                {smsGranted ? 'Allowed' : 'Enable'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* SECTION 2: BATTERY & BACKGROUND */}
         <View style={[styles.sectionHeader, { marginTop: Spacing.md }]}>

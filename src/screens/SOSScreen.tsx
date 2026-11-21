@@ -11,6 +11,8 @@ import { supabase } from '../lib/supabase';
 import * as Location from 'expo-location';
 import { queueSOSEvent } from '../utils/cache';
 import { sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
+import { sendEmergencySMSToFamily } from '../services/EmergencySMSService';
+import { getDeviceBatteryLevel } from '../services/batteryService';
 
 import { useAlert } from '../context/AlertContext';
 
@@ -24,6 +26,13 @@ export default function SOSScreen({ navigation }: Props) {
     const { showAlert } = useAlert();
     const [phase, setPhase] = useState<'idle' | 'countdown' | 'sent'>('idle');
     const [count, setCount] = useState(COUNTDOWN);
+    const [smsStatus, setSmsStatus] = useState<{
+        sent: boolean;
+        count: number;
+        names: string[];
+    } | null>(null);
+    const [lastSOSLocation, setLastSOSLocation] = useState<{ lat?: number; lng?: number }>({});
+    const [deviceBattery, setDeviceBattery] = useState<number | null>(null);
     const intervalRef = useRef<any>(null);
     const watchRef = useRef<any>(null);
     const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -89,6 +98,15 @@ export default function SOSScreen({ navigation }: Props) {
             }
         } catch { }
 
+        // Fetch battery level safely
+        let battery: number | null = null;
+        try {
+            battery = await getDeviceBatteryLevel();
+            setDeviceBattery(battery);
+        } catch {}
+
+        setLastSOSLocation({ lat, lng });
+
         const event = {
             user_id: user?.id,
             lat,
@@ -129,8 +147,10 @@ export default function SOSScreen({ navigation }: Props) {
                     from_user_id: user?.id,
                     from_name: userProfile?.name || user?.user_metadata?.name || 'Family Member',
                     from_avatar: userProfile?.avatar_url || null,
+                    from_phone: userProfile?.phone || null,
                     lat,
                     lng,
+                    battery,
                     target_family_user_ids: targetFamilyUserIds,
                     triggered_at: new Date().toISOString(),
                 },
@@ -146,11 +166,33 @@ export default function SOSScreen({ navigation }: Props) {
                     userProfile?.name || 'Family Member',
                     lat,
                     lng,
-                    null
+                    battery
                 ).catch(() => {});
             }
         } catch (e) {
             console.warn('[SOSScreen] Broadcast SOS error:', e);
+        }
+
+        // Dispatch emergency SMS to all family members
+        let smsResult: any = null;
+        try {
+            smsResult = await sendEmergencySMSToFamily({
+                senderName: userProfile?.name || user?.user_metadata?.name || 'A family member',
+                senderPhone: userProfile?.phone,
+                senderId: user?.id,
+                lat,
+                lng,
+                battery,
+            });
+            if (smsResult && smsResult.recipients.length > 0) {
+                setSmsStatus({
+                    sent: smsResult.success,
+                    count: smsResult.recipients.length,
+                    names: smsResult.recipientNames,
+                });
+            }
+        } catch (smsErr) {
+            console.warn('[SOSScreen] SMS dispatch error:', smsErr);
         }
 
         // Start continuous tracking while in "sent" phase
@@ -175,13 +217,28 @@ export default function SOSScreen({ navigation }: Props) {
             );
         }
 
-        // Offer to call 911
+        const smsSummary = smsResult?.recipientNames?.length > 0
+            ? ` and SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}`
+            : '';
+
+        // Offer to call 911 or re-send SMS
         showAlert({
-            title: '🚨 SOS Sent!',
-            message: 'Your emergency alert has been sent to your family. Do you want to call 911 now?',
+            title: '🚨 SOS & SMS Dispatched!',
+            message: `Your emergency SOS has been broadcasted to your family${smsSummary}. Do you want to call 911 now?`,
             type: 'warning',
             buttons: [
                 { text: 'Call 911', style: 'destructive', onPress: () => Linking.openURL('tel:911') },
+                ...(smsResult?.recipients?.length > 0 ? [{
+                    text: 'Re-send SMS',
+                    onPress: () => sendEmergencySMSToFamily({
+                        senderName: userProfile?.name || user?.user_metadata?.name || 'A family member',
+                        senderPhone: userProfile?.phone,
+                        senderId: user?.id,
+                        lat,
+                        lng,
+                        battery,
+                    }),
+                }] : []),
                 { text: 'Later', style: 'cancel' },
             ]
         });
@@ -238,6 +295,39 @@ export default function SOSScreen({ navigation }: Props) {
                                 <Text style={styles.sosBtnSub}>Help is on the way</Text>
                             </View>
                         </View>
+
+                        {/* SMS Distress Alert Status Card */}
+                        <View style={styles.smsAlertCard}>
+                            <View style={styles.smsAlertHeader}>
+                                <Ionicons name="chatbubbles" size={20} color="#10B981" />
+                                <Text style={styles.smsAlertTitle}>
+                                    {smsStatus && smsStatus.count > 0
+                                        ? `SMS Alert Sent (${smsStatus.count} Family Member${smsStatus.count > 1 ? 's' : ''})`
+                                        : 'Family SMS Dispatch Ready'}
+                                </Text>
+                            </View>
+                            <Text style={styles.smsAlertBody}>
+                                {smsStatus && smsStatus.names.length > 0
+                                    ? `Distress signal & GPS sent to: ${smsStatus.names.join(', ')}`
+                                    : 'Emergency SMS with live GPS link prepared for family circle.'}
+                            </Text>
+                            <TouchableOpacity
+                                style={styles.resendSmsBtn}
+                                onPress={() => sendEmergencySMSToFamily({
+                                    senderName: userProfile?.name || user?.user_metadata?.name || 'A family member',
+                                    senderPhone: userProfile?.phone,
+                                    senderId: user?.id,
+                                    lat: lastSOSLocation.lat,
+                                    lng: lastSOSLocation.lng,
+                                    battery: deviceBattery,
+                                })}
+                                activeOpacity={0.8}
+                            >
+                                <Ionicons name="chatbox-ellipses" size={16} color={Colors.white} />
+                                <Text style={styles.resendSmsText}>Re-send SMS to Family</Text>
+                            </TouchableOpacity>
+                        </View>
+
                         <TouchableOpacity style={styles.callBtn} onPress={() => Linking.openURL('tel:911')}>
                             <Ionicons name="call" size={20} color={Colors.white} />
                             <Text style={styles.callText}>Call 911</Text>
@@ -253,11 +343,12 @@ export default function SOSScreen({ navigation }: Props) {
             <View style={styles.infoRow}>
                 {[
                     { icon: 'location', label: 'GPS Location\nShared' },
+                    { icon: 'chatbubbles', label: 'SMS Alert\nDispatched' },
                     { icon: 'people', label: 'Family\nNotified' },
                     { icon: 'call', label: '911\nAvailable' },
                 ].map((item) => (
                     <View key={item.label} style={styles.infoCard}>
-                        <Ionicons name={item.icon as any} size={20} color={Colors.sos} />
+                        <Ionicons name={item.icon as any} size={18} color={Colors.sos} />
                         <Text style={styles.infoLabel}>{item.label}</Text>
                     </View>
                 ))}
@@ -313,11 +404,54 @@ const styles = StyleSheet.create({
     cancelText: { color: Colors.white, fontWeight: '700', fontSize: 16 },
     callBtn: {
         flexDirection: 'row', alignItems: 'center', gap: 8,
-        marginTop: 20, backgroundColor: Colors.sos,
+        marginTop: 14, backgroundColor: Colors.sos,
         paddingHorizontal: 32, paddingVertical: 14, borderRadius: BorderRadius.full,
     },
     callText: { color: Colors.white, fontWeight: '700', fontSize: 16 },
-    doneBtn: { marginTop: 12, paddingVertical: 10, paddingHorizontal: 32 },
+    smsAlertCard: {
+        marginTop: 16,
+        marginHorizontal: Spacing.lg,
+        backgroundColor: 'rgba(16, 185, 129, 0.12)',
+        borderColor: 'rgba(16, 185, 129, 0.4)',
+        borderWidth: 1,
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.md,
+        width: '90%',
+        alignItems: 'center',
+    },
+    smsAlertHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 4,
+    },
+    smsAlertTitle: {
+        color: '#10B981',
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    smsAlertBody: {
+        color: 'rgba(255, 255, 255, 0.8)',
+        fontSize: 12,
+        textAlign: 'center',
+        lineHeight: 16,
+        marginBottom: 10,
+    },
+    resendSmsBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: '#059669',
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: BorderRadius.full,
+    },
+    resendSmsText: {
+        color: Colors.white,
+        fontSize: 12,
+        fontWeight: '700',
+    },
+    doneBtn: { marginTop: 8, paddingVertical: 8, paddingHorizontal: 32 },
     doneBtnText: { color: 'rgba(255,255,255,0.6)', fontSize: 14 },
     infoRow: {
         flexDirection: 'row', gap: Spacing.sm,

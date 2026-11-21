@@ -7,7 +7,10 @@ import com.facebook.react.uimanager.ViewManager
 
 class EmergencyAudioPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-        return listOf(EmergencyAudioModule(reactContext))
+        return listOf(
+            EmergencyAudioModule(reactContext),
+            DirectSMSModule(reactContext)
+        )
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<in Nothing, in Nothing>> {

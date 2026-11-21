@@ -1309,10 +1309,10 @@ export function listenForEmergencyAlerts(
           return;
         }
 
-        // Fetch sender name & avatar
+        // Fetch sender name, avatar & phone
         const { data: userData } = await supabase
           .from('users')
-          .select('name, avatar_url')
+          .select('name, avatar_url, phone')
           .eq('id', newEvent.user_id)
           .single();
 
@@ -1323,6 +1323,8 @@ export function listenForEmergencyAlerts(
           alertType: 'sos' as const,
           fromName: name,
           fromAvatar: userData?.avatar_url || null,
+          fromPhone: userData?.phone || null,
+          fromUserId: newEvent.user_id,
           fromLat: newEvent.lat,
           fromLng: newEvent.lng,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1372,6 +1374,8 @@ export function listenForEmergencyAlerts(
         alertType: 'sos' as const,
         fromName: sender,
         fromAvatar: payload.from_avatar || null,
+        fromPhone: payload.from_phone || null,
+        fromUserId: payload.from_user_id || null,
         fromLat: payload.lat,
         fromLng: payload.lng,
         battery: payload.battery,
@@ -1420,6 +1424,8 @@ export function listenForEmergencyAlerts(
         alertType: 'loud_ping' as const,
         fromName: sender,
         fromAvatar: payload.from_avatar || null,
+        fromPhone: payload.from_phone || null,
+        fromUserId: payload.from_user_id || null,
         fromLat: payload.from_lat,
         fromLng: payload.from_lng,
         battery: payload.battery,
@@ -1475,6 +1481,8 @@ export function listenForEmergencyAlerts(
         alertType: 'checkin' as const,
         fromName: sender,
         fromAvatar: payload.from_avatar || null,
+        fromPhone: payload.from_phone || null,
+        fromUserId: payload.from_user_id || null,
         fromLat: payload.from_lat,
         fromLng: payload.from_lng,
         battery: payload.battery,

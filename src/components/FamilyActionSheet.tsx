@@ -14,7 +14,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import type { FamilyMember3D } from './FamilyMap3D';
-import { triggerTestNDRRMCAlert } from '../services/EmergencyNotificationService';
 import { formatFromAgo } from '../utils/tracking';
 
 interface FamilyActionSheetProps {
@@ -448,80 +447,6 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
               />
             </View>
           </TouchableOpacity>
-
-          {/* Action 3: Single-Device Emergency Test Card */}
-          <View style={styles.testCard}>
-            <View style={styles.testHeaderRow}>
-              <View style={styles.testTag}>
-                <Text style={styles.testTagText}>🧪 SINGLE-DEVICE TEST</Text>
-              </View>
-              <Text style={styles.testHeaderSub}>Test without 2nd phone</Text>
-            </View>
-            <Text style={styles.testDescription}>
-              Test how the NDRRMC warning popup box and siren look on this device:
-            </Text>
-
-            <View style={styles.testBtnRow}>
-              <TouchableOpacity
-                style={[styles.testBtn, { backgroundColor: '#B91C1C' }]}
-                onPress={() => triggerTestNDRRMCAlert('sos', 0, 'Self Test (Emergency SOS)')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="warning" size={14} color="#FFFFFF" />
-                <Text style={styles.testBtnText}>SOS Alert</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.testBtn, { backgroundColor: '#DC2626' }]}
-                onPress={() => triggerTestNDRRMCAlert('loud_ping', 0, 'Self Test (Loud Ping)')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="volume-high" size={14} color="#FFFFFF" />
-                <Text style={styles.testBtnText}>Loud Ping</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.testBtn, { backgroundColor: '#2563EB' }]}
-                onPress={() => triggerTestNDRRMCAlert('checkin', 0, 'Self Test (Check-In)')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="shield-checkmark" size={14} color="#FFFFFF" />
-                <Text style={styles.testBtnText}>Are You Safe?</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.testBtn, { backgroundColor: '#7C3AED' }]}
-                onPress={() => {
-                  Alert.alert(
-                    '⏱️ 5-Second Test Armed',
-                    'Choose an emergency alert to test, then minimize the app or lock your phone NOW!\n\nThe NDRRMC emergency popup will fire in 5 seconds with siren and heads-up banner.',
-                    [
-                      { text: '🚨 SOS Alert (5s)', onPress: () => triggerTestNDRRMCAlert('sos', 5, 'Family Circle (Test SOS)') },
-                      { text: '🔊 Loud Ping (5s)', onPress: () => triggerTestNDRRMCAlert('loud_ping', 5, 'NDRRMC / Test Alert') },
-                      { text: 'Cancel', style: 'cancel' }
-                    ]
-                  );
-                }}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="timer-outline" size={14} color="#FFFFFF" />
-                <Text style={styles.testBtnText}>Lock Phone (5s)</Text>
-              </TouchableOpacity>
-            </View>
-
-            {Platform.OS === 'android' && (
-              <TouchableOpacity
-                style={styles.permissionHintRow}
-                onPress={() => Linking.openSettings()}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="shield-checkmark" size={14} color="#93C5FD" />
-                <Text style={styles.permissionHintText}>
-                  Lock-screen Full-Screen Alerts: Tap to verify <Text style={{ fontWeight: '700', color: '#FFFFFF', textDecorationLine: 'underline' }}>Full-screen intent</Text> is allowed in App Settings.
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
         </View>
       )}
     </View>
@@ -829,79 +754,6 @@ const styles = StyleSheet.create({
   },
   safeBadgeCheck: {
     paddingLeft: 8,
-  },
-  /* Single-Device Test Section */
-  testCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: BorderRadius.lg,
-    padding: 12,
-    borderWidth: 1.5,
-    borderColor: '#334155',
-    marginTop: 4,
-  },
-  testHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  testTag: {
-    backgroundColor: '#F59E0B',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  testTagText: {
-    color: '#000000',
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  testHeaderSub: {
-    color: '#94A3B8',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  testDescription: {
-    color: '#CBD5E1',
-    fontSize: 11,
-    lineHeight: 15,
-    marginBottom: 10,
-  },
-  testBtnRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  testBtn: {
-    minWidth: '47%',
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 9,
-    paddingHorizontal: 6,
-    borderRadius: 8,
-    gap: 4,
-  },
-  testBtnText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  permissionHintRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 10,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#334155',
-  },
-  permissionHintText: {
-    color: '#93C5FD',
-    fontSize: 10.5,
-    flex: 1,
   },
   /* Telemetry & Info Card */
   telemetryCard: {

@@ -10,6 +10,7 @@ import {
   Platform,
   Image,
   Linking,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -22,6 +23,8 @@ export interface NDRRMCEmergencyAlertData {
   alertType: 'loud_ping' | 'checkin' | 'sos';
   fromName: string;
   fromAvatar?: string | null;
+  fromPhone?: string | null;
+  fromUserId?: string;
   fromLat?: number;
   fromLng?: number;
   battery?: number | null;
@@ -284,7 +287,50 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
                     </View>
                   </TouchableOpacity>
 
-                  {/* Secondary SOS Action: Call 911 Emergency */}
+                  {/* Secondary SOS Action: Call or SMS Family Member */}
+                  {alertData.fromPhone ? (
+                    <TouchableOpacity
+                      style={styles.directContactButton}
+                      onPress={() => {
+                        Alert.alert(
+                          `Contact ${alertData.fromName}`,
+                          `Phone: ${alertData.fromPhone}\nChoose communication channel:`,
+                          [
+                            {
+                              text: `Call ${alertData.fromName}`,
+                              onPress: () => {
+                                stopEmergencyAlarmAudio().catch(() => {});
+                                Vibration.cancel();
+                                Linking.openURL(`tel:${alertData.fromPhone}`).catch(() => {});
+                              },
+                            },
+                            {
+                              text: `Send SMS to ${alertData.fromName}`,
+                              onPress: () => {
+                                const sep = Platform.OS === 'ios' ? '&' : '?';
+                                const text = `I received your emergency SOS! Hang in there, help is on the way.`;
+                                Linking.openURL(`sms:${alertData.fromPhone}${sep}body=${encodeURIComponent(text)}`).catch(() => {});
+                              },
+                            },
+                            { text: 'Cancel', style: 'cancel' },
+                          ]
+                        );
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="chatbubbles" size={22} color="#FFFFFF" />
+                      <View style={styles.btnTextContainer}>
+                        <Text style={styles.directContactButtonText}>
+                          CALL / SMS {alertData.fromName.toUpperCase()}
+                        </Text>
+                        <Text style={styles.directContactButtonSub}>
+                          Direct cellular response to family member
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  ) : null}
+
+                  {/* Tertiary SOS Action: Call 911 Emergency */}
                   <TouchableOpacity
                     style={styles.sosButton}
                     onPress={() => {
@@ -329,6 +375,51 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
                       <Text style={styles.sosButtonSub}>Broadcast emergency distress</Text>
                     </View>
                   </TouchableOpacity>
+
+                  {/* Tertiary: Quick Call or SMS Requester */}
+                  {alertData.fromPhone ? (
+                    <TouchableOpacity
+                      style={styles.directContactButton}
+                      onPress={() => {
+                        Alert.alert(
+                          `Contact ${alertData.fromName}`,
+                          `Phone: ${alertData.fromPhone}\nChoose communication channel:`,
+                          [
+                            {
+                              text: `Call ${alertData.fromName}`,
+                              onPress: () => {
+                                stopEmergencyAlarmAudio().catch(() => {});
+                                Vibration.cancel();
+                                Linking.openURL(`tel:${alertData.fromPhone}`).catch(() => {});
+                              },
+                            },
+                            {
+                              text: `Send SMS to ${alertData.fromName}`,
+                              onPress: () => {
+                                const sep = Platform.OS === 'ios' ? '&' : '?';
+                                const text = isCheckIn
+                                  ? `I am SAFE. Thanks for checking on me! - Sent via Abucay Guardian`
+                                  : `I received your loud ping alert! - Sent via Abucay Guardian`;
+                                Linking.openURL(`sms:${alertData.fromPhone}${sep}body=${encodeURIComponent(text)}`).catch(() => {});
+                              },
+                            },
+                            { text: 'Cancel', style: 'cancel' },
+                          ]
+                        );
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="chatbubbles" size={20} color="#FFFFFF" />
+                      <View style={styles.btnTextContainer}>
+                        <Text style={styles.directContactButtonText}>
+                          CALL / SMS {alertData.fromName.toUpperCase()}
+                        </Text>
+                        <Text style={styles.directContactButtonSub}>
+                          Direct cellular response
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  ) : null}
                 </>
               )}
 
@@ -568,6 +659,26 @@ const styles = StyleSheet.create({
   safeButtonSub: {
     color: '#DCFCE7',
     fontSize: 11,
+    fontWeight: '600',
+  },
+  directContactButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0284C7', // Blue
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+  },
+  directContactButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  directContactButtonSub: {
+    color: '#E0F2FE',
+    fontSize: 10,
     fontWeight: '600',
   },
   sosButton: {

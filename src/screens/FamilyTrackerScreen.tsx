@@ -28,6 +28,11 @@ import {
 } from '../services/RoutingService';
 import { FamilyActionSheet } from '../components/FamilyActionSheet';
 import {
+    sendEmergencySMSToFamily,
+    sendCheckInSMSToMember,
+    sendLoudPingSMSToMember,
+} from '../services/EmergencySMSService';
+import {
     queueSOSEvent,
     queueLocationUpdate,
     getQueuedLocations,
@@ -38,7 +43,7 @@ import {
     getLastFetchTimestamp,
 } from '../utils/cache';
 import { getTrackingStatus, formatFromAgo } from '../utils/tracking';
-import { triggerTestNDRRMCAlert, sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
+import { sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
 
 /**
  * Calculates bearing angle in degrees (0-360) from coordinate 1 to coordinate 2.
@@ -1069,60 +1074,57 @@ export default function FamilyTrackerScreen() {
         const isSelf = member.memberUserId === user?.id || member.id === user?.id;
         const targetUserId = member.memberUserId || member.id;
 
-        // 1. If self-target or single-device test, immediately trigger local test alert
+        // 1. If self-target, do not trigger an alarm on self
         if (isSelf) {
-            await triggerTestNDRRMCAlert('checkin', 0, userProfile?.name || 'Self Test');
-            return;
-        }
-
-        // 2. If member has not linked an account via pairing code, offer local test preview or SMS
-        if (!member.memberUserId) {
-            showAlert({
-                title: `${member.name} Not Paired Yet`,
-                message: `${member.name} has not linked their device via pairing code yet.\n\nWould you like to test how the "Are You Safe?" alert looks or send an SMS?`,
-                type: 'info',
-                buttons: [
-                    {
-                        text: 'Test Alert (Preview)',
-                        onPress: () => triggerTestNDRRMCAlert('checkin', 0, member.name),
-                    },
-                    ...(member.phone ? [{
-                        text: 'Send SMS Check-In',
-                        onPress: () => handleSendSMSCheckIn(member),
-                    }] : []),
-                    { text: 'Cancel', style: 'cancel' },
-                ],
-            });
-            return;
-        }
-
-        try {
-            await supabase.channel('family-broadcast').send({
-                type: 'broadcast',
-                event: 'checkin_request',
-                payload: {
-                    from_user_id: user?.id,
-                    from_name: userProfile?.name || 'Family Circle',
-                    from_avatar: userProfile?.avatar_url,
-                    from_lat: myLocation?.lat,
-                    from_lng: myLocation?.lng,
-                    to_member_id: targetUserId,
-                    to_user_id: targetUserId,
-                    to_row_id: member.id,
-                    to_name: member.name,
-                    to_phone: member.phone,
-                    is_test: false,
-                    sent_at: new Date().toISOString(),
-                },
-            });
-            Vibration.vibrate(60);
             showToast({
-                message: `Safety check-in prompt sent to ${member.name}`,
-                type: 'success',
+                message: 'You cannot send a check-in prompt to yourself. Select a family member.',
+                type: 'info',
             });
+            return;
+        }
 
-            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
-            if (member.memberUserId) {
+        // 2. Alert member via SMS
+        let smsResult: any = null;
+        if (member.phone) {
+            try {
+                smsResult = await sendCheckInSMSToMember({
+                    senderName: userProfile?.name || 'Family Member',
+                    senderPhone: userProfile?.phone,
+                    recipientName: member.name,
+                    recipientPhone: member.phone,
+                    lat: myLocation?.lat,
+                    lng: myLocation?.lng,
+                });
+            } catch (smsErr) {
+                console.warn('[CheckIn] SMS dispatch error:', smsErr);
+            }
+        }
+
+        // 3. Broadcast live check-in request and push notification if paired
+        if (member.memberUserId) {
+            try {
+                await supabase.channel('family-broadcast').send({
+                    type: 'broadcast',
+                    event: 'checkin_request',
+                    payload: {
+                        from_user_id: user?.id,
+                        from_name: userProfile?.name || 'Family Circle',
+                        from_avatar: userProfile?.avatar_url,
+                        from_phone: userProfile?.phone || null,
+                        from_lat: myLocation?.lat,
+                        from_lng: myLocation?.lng,
+                        to_member_id: targetUserId,
+                        to_user_id: targetUserId,
+                        to_row_id: member.id,
+                        to_name: member.name,
+                        to_phone: member.phone,
+                        is_test: false,
+                        sent_at: new Date().toISOString(),
+                    },
+                });
+                Vibration.vibrate(60);
+
+                // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
                 sendEmergencyPushNotification(
                     [member.memberUserId],
                     '⚠️ EMERGENCY ALERT: ARE YOU SAFE?',
@@ -1132,38 +1134,27 @@ export default function FamilyTrackerScreen() {
                     myLocation?.lat,
                     myLocation?.lng
                 ).catch(() => {});
-            }
-        } catch (e) {
-            console.warn('[CheckIn] Send error:', e);
-            if (member.phone) {
-                showAlert({
-                    title: 'Check-In Fallback',
-                    message: `Could not deliver instant push prompt. Send SMS check-in to ${member.name}?`,
-                    buttons: [
-                        { text: 'Send SMS', onPress: () => handleSendSMSCheckIn(member) },
-                        { text: 'Cancel', style: 'cancel' }
-                    ]
-                });
-            } else {
-                showToast({
-                    message: `Could not send push check-in.`,
-                    type: 'warning',
-                });
+            } catch (e) {
+                console.warn('[CheckIn] Send error:', e);
             }
         }
+
+        showToast({
+            message: member.phone
+                ? `Safety check & SMS sent to ${member.name}`
+                : `Safety check prompt sent to ${member.name}`,
+            type: 'success',
+        });
     };
 
     const handleSendSMSCheckIn = (member: FamilyMember3D) => {
-        const phone = member.phone || '';
-        const body = `Hi ${member.name}, are you safe? Please reply 'SAFE' or 'NEED HELP'. - Sent via Abucay Guardian`;
-        const separator = Platform.OS === 'ios' ? '&' : '?';
-        const url = `sms:${phone}${separator}body=${encodeURIComponent(body)}`;
-        Linking.openURL(url).catch(() => {
-            showAlert({
-                title: 'Unable to open SMS',
-                message: `Could not open your device SMS app. Please text ${phone || member.name} directly.`,
-                type: 'error',
-            });
+        sendCheckInSMSToMember({
+            senderName: userProfile?.name || 'Family Member',
+            senderPhone: userProfile?.phone,
+            recipientName: member.name,
+            recipientPhone: member.phone || '',
+            lat: myLocation?.lat,
+            lng: myLocation?.lng,
         });
     };
 
@@ -1304,69 +1295,69 @@ export default function FamilyTrackerScreen() {
             showAlert({ title: 'No Phone Number', message: `No phone number on record for ${name}.`, type: 'warning' });
             return;
         }
-        const loc = myLocation ? `\nMy GPS: https://maps.google.com/?q=${myLocation.lat},${myLocation.lng}` : '';
-        const body = `Urgent check-in from ${userProfile?.name || 'Family'}: Please call or text back as soon as you see this.${loc}`;
-        const separator = Platform.OS === 'ios' ? '&' : '?';
-        Linking.openURL(`sms:${phone}${separator}body=${encodeURIComponent(body)}`);
+        sendLoudPingSMSToMember({
+            senderName: userProfile?.name || 'Family Member',
+            senderPhone: userProfile?.phone,
+            recipientName: name,
+            recipientPhone: phone,
+            lat: myLocation?.lat,
+            lng: myLocation?.lng,
+        });
     };
 
     const handleLoudPing = async (member: FamilyMember3D) => {
         const isSelf = member.memberUserId === user?.id || member.id === user?.id;
         const targetUserId = member.memberUserId || member.id;
 
-        // 1. If self-target or single-device test, immediately trigger local test alert
+        // 1. If self-target, do not trigger a loud ping alarm on self
         if (isSelf) {
-            await triggerTestNDRRMCAlert('loud_ping', 0, userProfile?.name || 'Self Test');
+            showToast({
+                message: 'You cannot trigger a loud ping alarm on yourself. Select a family member.',
+                type: 'info',
+            });
             return;
         }
 
-        // 2. If member has not linked an account via pairing code, offer local test preview or SMS
-        if (!member.memberUserId) {
-            showAlert({
-                title: `${member.name} Not Paired Yet`,
-                message: `${member.name} has not linked their device via pairing code yet.\n\nWould you like to test how the Loud Ping alert sounds or send an SMS?`,
-                type: 'warning',
-                buttons: [
-                    {
-                        text: 'Test Loud Ping (Preview)',
-                        onPress: () => triggerTestNDRRMCAlert('loud_ping', 0, member.name),
+        // 2. Alert member via SMS
+        let smsResult: any = null;
+        if (member.phone) {
+            try {
+                smsResult = await sendLoudPingSMSToMember({
+                    senderName: userProfile?.name || 'Family Member',
+                    senderPhone: userProfile?.phone,
+                    recipientName: member.name,
+                    recipientPhone: member.phone,
+                    lat: myLocation?.lat,
+                    lng: myLocation?.lng,
+                });
+            } catch (smsErr) {
+                console.warn('[LoudPing] SMS dispatch error:', smsErr);
+            }
+        }
+
+        // 3. Broadcast live loud ping and push notification if paired
+        if (member.memberUserId) {
+            try {
+                await supabase.channel('family-broadcast').send({
+                    type: 'broadcast',
+                    event: 'loud_ping',
+                    payload: {
+                        from_user_id: user?.id,
+                        from_name: userProfile?.name || 'Family Circle',
+                        from_avatar: userProfile?.avatar_url,
+                        from_phone: userProfile?.phone || null,
+                        to_member_id: targetUserId,
+                        to_user_id: targetUserId,
+                        to_row_id: member.id,
+                        to_name: member.name,
+                        to_phone: member.phone,
+                        is_test: false,
+                        sent_at: new Date().toISOString(),
                     },
-                    ...(member.phone ? [{
-                        text: 'Send SMS Alert',
-                        onPress: () => handleSendOfflineSMS(member.phone || '', member.name),
-                    }] : []),
-                    { text: 'Cancel', style: 'cancel' },
-                ],
-            });
-            return;
-        }
+                });
+                Vibration.vibrate([0, 500, 200, 500, 200, 1000]);
 
-        try {
-            await supabase.channel('family-broadcast').send({
-                type: 'broadcast',
-                event: 'loud_ping',
-                payload: {
-                    from_user_id: user?.id,
-                    from_name: userProfile?.name || 'Family Circle',
-                    from_avatar: userProfile?.avatar_url,
-                    to_member_id: targetUserId,
-                    to_user_id: targetUserId,
-                    to_row_id: member.id,
-                    to_name: member.name,
-                    to_phone: member.phone,
-                    is_test: false,
-                    sent_at: new Date().toISOString(),
-                },
-            });
-            Vibration.vibrate([0, 500, 200, 500, 200, 1000]);
-            showAlert({
-                title: 'Loud Emergency Ping Sent',
-                message: `Triggered high-priority alarm sound and vibration on ${member.name}'s phone.`,
-                type: 'warning',
-            });
-
-            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
-            if (member.memberUserId) {
+                // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
                 sendEmergencyPushNotification(
                     [member.memberUserId],
                     '🚨 EMERGENCY ALERT (LOUD PING)',
@@ -1374,25 +1365,32 @@ export default function FamilyTrackerScreen() {
                     'loud_ping',
                     userProfile?.name || 'Family Circle'
                 ).catch(() => {});
-            }
-        } catch (e) {
-            console.warn('[LoudPing] Error:', e);
-            if (member.phone) {
-                showAlert({
-                    title: 'Ping Fallback',
-                    message: `Could not send internet ping. Send an urgent SMS ping to ${member.name}?`,
-                    buttons: [
-                        {
-                            text: 'Send SMS Alert',
-                            onPress: () => handleSendOfflineSMS(member.phone || '', member.name),
-                        },
-                        { text: 'Cancel', style: 'cancel' },
-                    ],
-                });
-            } else {
-                showToast({ message: 'Could not send loud ping via internet.', type: 'error' });
+            } catch (e) {
+                console.warn('[LoudPing] Error:', e);
             }
         }
+
+        showAlert({
+            title: 'Loud Emergency Ping & SMS Sent',
+            message: member.phone
+                ? `Triggered high-priority alarm sound and sent urgent SMS alert to ${member.name}.`
+                : `Triggered high-priority alarm sound on ${member.name}'s phone.`,
+            type: 'warning',
+            buttons: [
+                ...(member.phone ? [{
+                    text: 'Re-send SMS',
+                    onPress: () => sendLoudPingSMSToMember({
+                        senderName: userProfile?.name || 'Family Member',
+                        senderPhone: userProfile?.phone,
+                        recipientName: member.name,
+                        recipientPhone: member.phone || '',
+                        lat: myLocation?.lat,
+                        lng: myLocation?.lng,
+                    }),
+                }] : []),
+                { text: 'OK', style: 'cancel' },
+            ],
+        });
     };
 
     const handleTriggerSOS = async () => {
@@ -1437,6 +1435,7 @@ export default function FamilyTrackerScreen() {
                     from_user_id: user.id,
                     from_name: userProfile?.name || 'Family Member',
                     from_avatar: userProfile?.avatar_url || null,
+                    from_phone: userProfile?.phone || null,
                     lat: myLocation?.lat,
                     lng: myLocation?.lng,
                     battery: userBattery,
@@ -1462,15 +1461,45 @@ export default function FamilyTrackerScreen() {
             console.warn('[FamilyTracker] Broadcast SOS error:', e);
         }
 
+        // Dispatch emergency SMS to all family members
+        let smsResult: any = null;
+        try {
+            smsResult = await sendEmergencySMSToFamily({
+                senderName: userProfile?.name || 'Family Member',
+                senderPhone: userProfile?.phone,
+                senderId: user.id,
+                lat: myLocation?.lat,
+                lng: myLocation?.lng,
+                battery: userBattery,
+            });
+        } catch (smsErr) {
+            console.warn('[FamilyTracker] SMS dispatch error:', smsErr);
+        }
+
+        const smsRecipientText = smsResult?.recipientNames?.length > 0
+            ? ` and SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}`
+            : '';
+
         showAlert({
-            title: '🚨 SOS BROADCASTED!',
-            message: `Emergency alert with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
+            title: '🚨 SOS & SMS BROADCASTED!',
+            message: `Emergency alert${smsRecipientText} with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
             type: 'error',
             buttons: [
                 {
                     text: 'Call 911 Emergency',
                     onPress: () => Linking.openURL('tel:911'),
                 },
+                ...(smsResult?.recipients?.length > 0 ? [{
+                    text: 'Re-send SMS',
+                    onPress: () => sendEmergencySMSToFamily({
+                        senderName: userProfile?.name || 'Family Member',
+                        senderPhone: userProfile?.phone,
+                        senderId: user.id,
+                        lat: myLocation?.lat,
+                        lng: myLocation?.lng,
+                        battery: userBattery,
+                    }),
+                }] : []),
                 { text: 'OK', style: 'cancel' },
             ],
         });
