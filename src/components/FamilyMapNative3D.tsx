@@ -181,13 +181,17 @@ const AnimatedNativeMarker: React.FC<{
   Marker,
   mapBearing = 0,
 }) => {
+  const isSOS = Boolean(member.isSOS);
+  const effectiveMarkerColor = isSOS ? '#DC2626' : markerColor;
+  const effectiveStatusColor = isSOS ? '#DC2626' : statusColor;
+
   const markerScale = useRef(new Animated.Value(0.1)).current;
   const markerOpacity = useRef(new Animated.Value(0)).current;
   const markerTranslateY = useRef(new Animated.Value(-24)).current;
-  const avatarScale = useRef(new Animated.Value(isSelected ? 1.15 : 1)).current;
+  const avatarScale = useRef(new Animated.Value(isSOS ? 1.25 : isSelected ? 1.15 : 1)).current;
 
-  const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected);
-  const badgeAnim = useRef(new Animated.Value(isSelected ? 1 : 0)).current;
+  const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected || isSOS);
+  const badgeAnim = useRef(new Animated.Value(isSelected || isSOS ? 1 : 0)).current;
 
   useEffect(() => {
     Animated.parallel([
@@ -198,10 +202,10 @@ const AnimatedNativeMarker: React.FC<{
   }, []);
 
   useEffect(() => {
-    if (isSelected) {
+    if (isSelected || isSOS) {
       setIsBadgeVisible(true);
       Animated.parallel([
-        Animated.spring(avatarScale, { toValue: 1.15, friction: 6, tension: 70, useNativeDriver: false }),
+        Animated.spring(avatarScale, { toValue: isSOS ? 1.25 : 1.15, friction: 6, tension: 70, useNativeDriver: false }),
         Animated.spring(badgeAnim, { toValue: 1, friction: 6, tension: 65, useNativeDriver: false }),
       ]).start();
     } else {
@@ -212,7 +216,7 @@ const AnimatedNativeMarker: React.FC<{
         setIsBadgeVisible(false);
       });
     }
-  }, [isSelected]);
+  }, [isSelected, isSOS]);
 
   return (
     <Marker
@@ -247,13 +251,15 @@ const AnimatedNativeMarker: React.FC<{
             ]}
           >
             <View style={styles.markerTitleRow}>
-              <View style={[styles.markerTitleDot, { backgroundColor: markerColor }]} />
-              <Text style={styles.memberName} numberOfLines={1}>
-                {isSelf ? 'You (Live)' : isTarget ? `${member.name} (Destination)` : member.name}
+              <View style={[styles.markerTitleDot, { backgroundColor: effectiveMarkerColor }]} />
+              <Text style={[styles.memberName, isSOS && { color: '#DC2626', fontWeight: '800' }]} numberOfLines={1}>
+                {isSOS ? `🚨 ${member.name} (IN DANGER!)` : isSelf ? 'You (Live)' : isTarget ? `${member.name} (Destination)` : member.name}
               </Text>
             </View>
-            <Text style={styles.metaText}>
-              {isSelf
+            <Text style={[styles.metaText, isSOS && { color: '#B91C1C', fontWeight: '700' }]}>
+              {isSOS
+                ? `🚨 SOS DISTRESS ACTIVE • ±${Math.round(member.accuracy || 5)}m${member.batteryLevel != null && member.batteryLevel > 0 ? ` • 🔋 ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''}`
+                : isSelf
                 ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
                 : status.isActive
                   ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
@@ -265,6 +271,7 @@ const AnimatedNativeMarker: React.FC<{
           <Animated.View
             style={[
               styles.nameBoxPointer,
+              isSOS && { borderTopColor: '#DC2626' },
               {
                 opacity: badgeAnim,
                 transform: [{ scale: badgeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }) }],
@@ -283,32 +290,33 @@ const AnimatedNativeMarker: React.FC<{
               },
             ]}
           >
-            <View style={[styles.visionBeamCone, { borderTopColor: markerColor + '38' }]} />
-            <View style={[styles.directionArrow, { borderBottomColor: markerColor }]} />
+            <View style={[styles.visionBeamCone, { borderTopColor: effectiveMarkerColor + '38' }]} />
+            <View style={[styles.directionArrow, { borderBottomColor: effectiveMarkerColor }]} />
           </View>
         )}
 
         <Animated.View
           style={[
             styles.avatarFrame,
-            { borderColor: markerColor, transform: [{ scale: avatarScale }] },
-            isSelected && [styles.avatarFrameSelected, { borderColor: markerColor }],
+            { borderColor: effectiveMarkerColor, transform: [{ scale: avatarScale }] },
+            isSelected && [styles.avatarFrameSelected, { borderColor: effectiveMarkerColor }],
+            isSOS && { borderColor: '#DC2626', borderWidth: 4, backgroundColor: '#FEF2F2' },
             isSelf && isNavigating && { borderWidth: 3.5, borderColor: '#2563EB' },
           ]}
         >
           {member.avatarUrl ? (
             <Image source={{ uri: member.avatarUrl }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatarFallback, { backgroundColor: markerColor }]}>
+            <View style={[styles.avatarFallback, { backgroundColor: effectiveMarkerColor }]}>
               <Text style={styles.avatarInitial}>
                 {member.name ? member.name.charAt(0).toUpperCase() : '?'}
               </Text>
             </View>
           )}
-          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          <View style={[styles.statusDot, { backgroundColor: effectiveStatusColor }]} />
         </Animated.View>
 
-        <View style={[styles.pointerTip, { borderTopColor: markerColor }]} />
+        <View style={[styles.pointerTip, { borderTopColor: effectiveMarkerColor }]} />
       </Animated.View>
     </Marker>
   );

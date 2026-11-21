@@ -20,6 +20,8 @@ export interface FamilyMember3D {
   relationship?: string;
   // Historical coordinates synced from offline buffer: [[lng, lat], ...]
   routeHistory?: [number, number][];
+  isSOS?: boolean;
+  sosTriggeredAt?: string;
 }
 
 export interface FamilyMap3DHandle {

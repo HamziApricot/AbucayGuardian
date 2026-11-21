@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Platform, Animated } from 'react-native';
+import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Platform, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, Circle } from './Map';
 import { getTrackingStatus } from '../utils/tracking';
@@ -66,6 +66,88 @@ const FlatHeadingIndicator: React.FC<{
   );
 });
 
+/**
+ * Animated concentric radar ripples rendered at ground zero of a family member in distress.
+ */
+const AnimatedDangerRadar: React.FC = React.memo(() => {
+  const wave1 = useRef(new Animated.Value(0)).current;
+  const wave2 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const makeAnim = (val: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(val, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: false,
+          }),
+          Animated.timing(val, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: false,
+          }),
+        ])
+      );
+
+    const a1 = makeAnim(wave1, 0);
+    const a2 = makeAnim(wave2, 900);
+    a1.start();
+    a2.start();
+
+    return () => {
+      a1.stop();
+      a2.stop();
+    };
+  }, []);
+
+  return (
+    <View style={styles.dangerRadarContainer} pointerEvents="none">
+      <Animated.View
+        style={[
+          styles.dangerRadarWave,
+          {
+            transform: [
+              {
+                scale: wave1.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.6, 3.4],
+                }),
+              },
+            ],
+            opacity: wave1.interpolate({
+              inputRange: [0, 0.6, 1],
+              outputRange: [0.85, 0.4, 0],
+            }),
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.dangerRadarWave,
+          {
+            transform: [
+              {
+                scale: wave2.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.6, 3.4],
+                }),
+              },
+            ],
+            opacity: wave2.interpolate({
+              inputRange: [0, 0.6, 1],
+              outputRange: [0.85, 0.4, 0],
+            }),
+          },
+        ]}
+      />
+      <View style={styles.dangerRadarCenterDot} />
+    </View>
+  );
+});
+
 const AnimatedFamilyMarker: React.FC<{
   member: FamilyMember3D;
   isSelected: boolean;
@@ -85,17 +167,19 @@ const AnimatedFamilyMarker: React.FC<{
   status,
   onPress,
 }) => {
+  const isSOS = Boolean(member.isSOS);
+
   // 1. Marker Entrance Drop-In Animation (useNativeDriver: false so react-native-maps renders into Bitmap on Android)
   const markerScale = useRef(new Animated.Value(0.1)).current;
   const markerOpacity = useRef(new Animated.Value(0)).current;
   const markerTranslateY = useRef(new Animated.Value(-24)).current;
 
   // 2. Avatar Selection Scale Animation
-  const avatarScale = useRef(new Animated.Value(isSelected ? 1.15 : 1)).current;
+  const avatarScale = useRef(new Animated.Value(isSOS ? 1.25 : isSelected ? 1.15 : 1)).current;
 
   // 3. Name Box Expansion & Collapse Animation (both in and out)
-  const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected);
-  const badgeAnim = useRef(new Animated.Value(isSelected ? 1 : 0)).current;
+  const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected || isSOS);
+  const badgeAnim = useRef(new Animated.Value(isSelected || isSOS ? 1 : 0)).current;
 
   // 4. Critical: tracksViewChanges must be true during animations so Google Maps paints every frame!
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
@@ -126,15 +210,15 @@ const AnimatedFamilyMarker: React.FC<{
     });
   }, []);
 
-  // Smooth Name Box & Avatar spring animation when selected or deselected
+  // Smooth Name Box & Avatar spring animation when selected, deselected, or SOS status toggles
   useEffect(() => {
     setTracksViewChanges(true);
 
-    if (isSelected) {
+    if (isSelected || isSOS) {
       setIsBadgeVisible(true);
       Animated.parallel([
         Animated.spring(avatarScale, {
-          toValue: 1.15,
+          toValue: isSOS ? 1.25 : 1.15,
           friction: 6,
           tension: 70,
           useNativeDriver: false,
@@ -166,22 +250,22 @@ const AnimatedFamilyMarker: React.FC<{
         setTracksViewChanges(false);
       });
     }
-  }, [isSelected]);
+  }, [isSelected, isSOS]);
 
-  // When GPS coordinates, speed, or battery update, briefly unfreeze tracksViewChanges to re-render bitmap
+  // When GPS coordinates, speed, battery, or SOS status update, unfreeze tracksViewChanges
   useEffect(() => {
     setTracksViewChanges(true);
     const timer = setTimeout(() => {
       setTracksViewChanges(false);
-    }, 350);
+    }, 400);
     return () => clearTimeout(timer);
-  }, [member.latitude, member.longitude, member.avatarUrl, member.speed, member.batteryLevel]);
+  }, [member.latitude, member.longitude, member.avatarUrl, member.speed, member.batteryLevel, member.isSOS]);
 
   return (
     <Marker
       coordinate={{ latitude: member.latitude, longitude: member.longitude }}
       anchor={{ x: 0.5, y: 0.5 }}
-      zIndex={isSelf ? 200 : isTarget ? 199 : isSelected ? 180 : 150}
+      zIndex={isSOS ? 999 : isSelf ? 200 : isTarget ? 199 : isSelected ? 180 : 150}
       onPress={onPress}
       tracksViewChanges={tracksViewChanges}
     >
@@ -203,7 +287,8 @@ const AnimatedFamilyMarker: React.FC<{
             style={[
               styles.infoBadge,
               styles.infoBadgeSelected,
-              { borderLeftColor: markerColor, borderLeftWidth: 3.5 },
+              { borderLeftColor: isSOS ? '#DC2626' : markerColor, borderLeftWidth: 3.5 },
+              isSOS && styles.infoBadgeDanger,
               {
                 opacity: badgeAnim,
                 transform: [
@@ -224,13 +309,15 @@ const AnimatedFamilyMarker: React.FC<{
             ]}
           >
             <View style={styles.markerTitleRow}>
-              <View style={[styles.markerTitleDot, { backgroundColor: markerColor }]} />
-              <Text style={styles.memberName} numberOfLines={1}>
-                {isSelf ? 'You (Live)' : isTarget ? `${member.name} (Destination)` : member.name}
+              <View style={[styles.markerTitleDot, { backgroundColor: isSOS ? '#DC2626' : markerColor }]} />
+              <Text style={[styles.memberName, isSOS && styles.memberNameDanger]} numberOfLines={1}>
+                {isSOS ? `🚨 ${member.name} (IN DANGER!)` : isSelf ? 'You (Live)' : isTarget ? `${member.name} (Destination)` : member.name}
               </Text>
             </View>
-            <Text style={styles.metaText}>
-              {isSelf
+            <Text style={[styles.metaText, isSOS && styles.metaTextDanger]}>
+              {isSOS
+                ? `🚨 SOS DISTRESS ACTIVE • ±${Math.round(member.accuracy || 5)}m${member.batteryLevel != null && member.batteryLevel > 0 ? ` • 🔋 ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''}`
+                : isSelf
                 ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
                 : status.isActive
                   ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
@@ -244,6 +331,7 @@ const AnimatedFamilyMarker: React.FC<{
           <Animated.View
             style={[
               styles.nameBoxPointer,
+              isSOS && styles.nameBoxPointerDanger,
               {
                 opacity: badgeAnim,
                 transform: [
@@ -264,17 +352,18 @@ const AnimatedFamilyMarker: React.FC<{
           style={[
             styles.avatarFrame,
             {
-              borderColor: markerColor,
+              borderColor: isSOS ? '#DC2626' : markerColor,
               transform: [{ scale: avatarScale }],
             },
             isSelected && styles.avatarFrameSelected,
+            isSOS && styles.avatarFrameDanger,
             isSelf && isNavigating && { borderWidth: 3.5, borderColor: '#2563EB' },
           ]}
         >
           {member.avatarUrl ? (
             <Image source={{ uri: member.avatarUrl }} style={styles.avatar} />
           ) : (
-            <View style={[styles.avatarFallback, { backgroundColor: markerColor }]}>
+            <View style={[styles.avatarFallback, { backgroundColor: isSOS ? '#DC2626' : markerColor }]}>
               {isSelf ? (
                 <Ionicons name="navigate" size={16} color="#FFFFFF" />
               ) : (
@@ -287,9 +376,14 @@ const AnimatedFamilyMarker: React.FC<{
           <View
             style={[
               styles.statusDot,
-              { backgroundColor: member.speed > 1 ? '#22C55E' : status.color },
+              { backgroundColor: isSOS ? '#DC2626' : member.speed > 1 ? '#22C55E' : status.color },
             ]}
           />
+          {isSOS && (
+            <View style={styles.sosMarkerBadge}>
+              <Ionicons name="warning" size={10} color="#FFFFFF" />
+            </View>
+          )}
         </Animated.View>
       </Animated.View>
     </Marker>
@@ -329,11 +423,36 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
         if (targetMember && targetMember.id !== youMember?.id) {
           list.push(targetMember);
         }
+        // Always retain any family member in active SOS so distress status is never lost
+        members.forEach((m) => {
+          if (m.isSOS && !list.some((existing) => existing.id === m.id)) {
+            list.push(m);
+          }
+        });
         return list;
       }
 
       return members;
     }, [members, navigationRoute]);
+
+    const [dangerPulseRadius, setDangerPulseRadius] = useState(60);
+
+    // Smoothly expand and pulse danger radius when any family member is in SOS distress
+    useEffect(() => {
+      const hasSOS = displayedMembers.some((m) => m.isSOS);
+      if (!hasSOS) return;
+
+      let expanding = true;
+      const interval = setInterval(() => {
+        setDangerPulseRadius((prev) => {
+          if (prev >= 92) expanding = false;
+          if (prev <= 42) expanding = true;
+          return expanding ? prev + 3 : prev - 3;
+        });
+      }, 55);
+
+      return () => clearInterval(interval);
+    }, [displayedMembers]);
 
     // Load safety POIs around user area
     useEffect(() => {
@@ -575,11 +694,12 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
             const isNavigating = Boolean(navigationRoute);
             const isSelected = member.id === activeSelectedId || isTarget || (isNavigating && isSelf);
             const status = getTrackingStatus(member.lastUpdated, true);
-            const markerColor = isSelf ? '#2563EB' : isTarget ? '#10B981' : (member.color || Colors.tracker);
+            const markerColor = member.isSOS ? '#DC2626' : isSelf ? '#2563EB' : isTarget ? '#10B981' : (member.color || Colors.tracker);
 
             return (
               <React.Fragment key={`member-group-${member.id}`}>
-                {isSelected && (
+                {/* Regular selection accuracy circle */}
+                {isSelected && !member.isSOS && (
                   <Circle
                     center={{ latitude: member.latitude, longitude: member.longitude }}
                     radius={Math.max(5, Math.min(member.accuracy || 15, 100))}
@@ -588,6 +708,40 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
                     strokeWidth={1}
                     zIndex={90}
                   />
+                )}
+
+                {/* Animated Red Danger Zone Circles when member sent an SOS */}
+                {member.isSOS && (
+                  <>
+                    <Circle
+                      key={`danger-circle-outer-${member.id}`}
+                      center={{ latitude: member.latitude, longitude: member.longitude }}
+                      radius={dangerPulseRadius}
+                      fillColor="rgba(220, 38, 38, 0.20)"
+                      strokeColor="#DC2626"
+                      strokeWidth={2.5}
+                      zIndex={96}
+                    />
+                    <Circle
+                      key={`danger-circle-inner-${member.id}`}
+                      center={{ latitude: member.latitude, longitude: member.longitude }}
+                      radius={Math.max(12, Math.round(dangerPulseRadius * 0.45))}
+                      fillColor="rgba(239, 68, 68, 0.35)"
+                      strokeColor="#991B1B"
+                      strokeWidth={1.5}
+                      zIndex={97}
+                    />
+                    <Marker
+                      key={`danger-radar-${member.id}`}
+                      coordinate={{ latitude: member.latitude, longitude: member.longitude }}
+                      anchor={{ x: 0.5, y: 0.5 }}
+                      flat={true}
+                      zIndex={98}
+                      tracksViewChanges={true}
+                    >
+                      <AnimatedDangerRadar />
+                    </Marker>
+                  </>
                 )}
 
                 {/* Flat Directional Marker: Locked to true ground heading, rotates with map gestures */}
@@ -912,6 +1066,74 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  dangerRadarContainer: {
+    width: 100,
+    height: 100,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dangerRadarWave: {
+    position: 'absolute',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 2,
+    borderColor: '#DC2626',
+    backgroundColor: 'rgba(239, 68, 68, 0.22)',
+  },
+  dangerRadarCenterDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#DC2626',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  infoBadgeDanger: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#DC2626',
+    borderWidth: 1.5,
+    borderLeftWidth: 4,
+    shadowColor: '#DC2626',
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 7,
+  },
+  nameBoxPointerDanger: {
+    borderTopColor: '#DC2626',
+  },
+  memberNameDanger: {
+    color: '#DC2626',
+    fontWeight: '800',
+  },
+  metaTextDanger: {
+    color: '#B91C1C',
+    fontWeight: '700',
+  },
+  avatarFrameDanger: {
+    borderColor: '#DC2626',
+    borderWidth: 4,
+    backgroundColor: '#FEF2F2',
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.85,
+    shadowRadius: 10,
+    elevation: 12,
+  },
+  sosMarkerBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    width: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    zIndex: 10,
   },
 });
 

@@ -61,6 +61,19 @@ function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number
     return (brng + 360) % 360;
 }
 
+export interface ActiveSOSDanger {
+    id: string;
+    userId: string;
+    name: string;
+    phone?: string | null;
+    avatarUrl?: string | null;
+    lat: number;
+    lng: number;
+    battery?: number | null;
+    triggeredAt: string;
+    relationship?: string;
+}
+
 export default function FamilyTrackerScreen() {
     const { user, userProfile } = useAuth();
     const insets = useSafeAreaInsets();
@@ -90,6 +103,78 @@ export default function FamilyTrackerScreen() {
     const collapseAnim = useRef(new Animated.Value(0)).current; // 0 = expanded, 1 = collapsed
     const mapRef = useRef<FamilyMap3DHandle>(null);
     const isTriggeringSOSRef = useRef<boolean>(false);
+
+    // Active Emergency SOS alerts for family members in immediate danger
+    const [activeSOSAlerts, setActiveSOSAlerts] = useState<ActiveSOSDanger[]>([]);
+    const [dismissedSOSIds, setDismissedSOSIds] = useState<string[]>([]);
+    const dangerBannerAnim = useRef(new Animated.Value(-160)).current;
+    const dangerPulseAnim = useRef(new Animated.Value(1)).current;
+    const dangerSirenRotate = useRef(new Animated.Value(0)).current;
+
+    const visibleSOSAlert = React.useMemo(() => {
+        return activeSOSAlerts.find((a) => !dismissedSOSIds.includes(a.id)) || null;
+    }, [activeSOSAlerts, dismissedSOSIds]);
+
+    // Animated entrance and continuous pulse & siren swing for danger alert banner
+    useEffect(() => {
+        if (visibleSOSAlert) {
+            Animated.spring(dangerBannerAnim, {
+                toValue: 0,
+                tension: 70,
+                friction: 9,
+                useNativeDriver: true,
+            }).start();
+
+            const pulseLoop = Animated.loop(
+                Animated.sequence([
+                    Animated.timing(dangerPulseAnim, {
+                        toValue: 1.035,
+                        duration: 650,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(dangerPulseAnim, {
+                        toValue: 1.0,
+                        duration: 650,
+                        useNativeDriver: true,
+                    }),
+                ])
+            );
+
+            const sirenLoop = Animated.loop(
+                Animated.sequence([
+                    Animated.timing(dangerSirenRotate, {
+                        toValue: 1,
+                        duration: 250,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(dangerSirenRotate, {
+                        toValue: -1,
+                        duration: 250,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(dangerSirenRotate, {
+                        toValue: 0,
+                        duration: 250,
+                        useNativeDriver: true,
+                    }),
+                ])
+            );
+
+            pulseLoop.start();
+            sirenLoop.start();
+
+            return () => {
+                pulseLoop.stop();
+                sirenLoop.stop();
+            };
+        } else {
+            Animated.timing(dangerBannerAnim, {
+                toValue: -160,
+                duration: 280,
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [visibleSOSAlert]);
 
     const collapseCard = () => {
         setIsCollapsed(true);
@@ -534,6 +619,89 @@ export default function FamilyTrackerScreen() {
                 if (!payload || !payload.from_user_id) return;
                 fetchFamilyLocations();
             })
+            .on('broadcast', { event: 'sos_alert' }, ({ payload }) => {
+                if (!payload || !payload.from_user_id) return;
+                console.log('[FamilyTracker] Received live SOS broadcast:', payload);
+
+                // Urgent tactile vibration sequence
+                try {
+                    Vibration.vibrate([0, 500, 200, 500, 200, 500]);
+                } catch {}
+
+                const incomingAlert: ActiveSOSDanger = {
+                    id: payload.from_user_id,
+                    userId: payload.from_user_id,
+                    name: payload.from_name || 'Family Member',
+                    phone: payload.from_phone || null,
+                    avatarUrl: payload.from_avatar || null,
+                    lat: payload.lat,
+                    lng: payload.lng,
+                    battery: payload.battery !== undefined ? payload.battery : null,
+                    triggeredAt: payload.triggered_at || new Date().toISOString(),
+                };
+
+                setActiveSOSAlerts((prev) => {
+                    const withoutCurrent = prev.filter((a) => a.userId !== payload.from_user_id);
+                    return [incomingAlert, ...withoutCurrent];
+                });
+
+                // Clear dismissal if a fresh SOS is triggered
+                setDismissedSOSIds((prev) => prev.filter((id) => id !== payload.from_user_id));
+
+                if (payload.lat && payload.lng) {
+                    setFamilyLocations((prev) =>
+                        prev.map((m) => {
+                            if (m.member_user_id === payload.from_user_id || m.user_id === payload.from_user_id || m.id === payload.from_user_id) {
+                                return {
+                                    ...m,
+                                    lat: payload.lat,
+                                    lng: payload.lng,
+                                    battery: payload.battery !== undefined ? payload.battery : m.battery,
+                                    updated_at: new Date().toISOString(),
+                                };
+                            }
+                            return m;
+                        })
+                    );
+
+                    // Smoothly focus map camera on the family member in distress
+                    mapRef.current?.focusOnCoordinates(payload.lat, payload.lng, payload.from_user_id);
+                }
+
+                showToast({
+                    message: `🚨 ${payload.from_name || 'A family member'} sent an SOS alert!`,
+                    type: 'error',
+                });
+            })
+            .on('broadcast', { event: 'sos_resolved' }, ({ payload }) => {
+                if (!payload?.user_id) return;
+                setActiveSOSAlerts((prev) => prev.filter((a) => a.userId !== payload.user_id));
+            })
+            .subscribe();
+
+        // Live database listener for active SOS events in sos_events table
+        const sosTableSub = supabase
+            .channel(`tracker-sos-events-${user.id}`)
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'sos_events',
+            }, async (payload) => {
+                const newEvt = payload.new as any;
+                if (!newEvt || newEvt.status !== 'active') return;
+                fetchFamilyLocations();
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'sos_events',
+            }, async (payload) => {
+                const updated = payload.new as any;
+                if (!updated) return;
+                if (updated.status !== 'active') {
+                    setActiveSOSAlerts((prev) => prev.filter((a) => a.userId !== updated.user_id));
+                }
+            })
             .subscribe();
 
         return () => {
@@ -547,6 +715,7 @@ export default function FamilyTrackerScreen() {
             supabase.removeChannel(trackerSub);
             supabase.removeChannel(familySub);
             supabase.removeChannel(usersSub);
+            supabase.removeChannel(sosTableSub);
             // Notice: We deliberately do NOT remove 'family-broadcast' here so App.tsx's global emergency listeners stay active
         };
     }, [user?.id]);
@@ -886,6 +1055,45 @@ export default function FamilyTrackerScreen() {
                 };
             });
 
+            // 7. Query active emergency SOS events from sos_events table
+            try {
+                const { data: activeSosEvents } = await supabase
+                    .from('sos_events')
+                    .select('*')
+                    .eq('status', 'active')
+                    .order('triggered_at', { ascending: false })
+                    .limit(5);
+
+                if (activeSosEvents && activeSosEvents.length > 0) {
+                    const freshAlerts: ActiveSOSDanger[] = [];
+                    activeSosEvents.forEach((evt: any) => {
+                        const isSelf = evt.user_id === user.id;
+                        const matchedMember = merged.find(
+                            (m: any) => m.member_user_id === evt.user_id || m.user_id === evt.user_id || m.id === evt.user_id
+                        );
+                        if (isSelf || matchedMember) {
+                            freshAlerts.push({
+                                id: evt.id || evt.user_id,
+                                userId: evt.user_id,
+                                name: isSelf ? (userProfile?.name || 'You') : (matchedMember?.name || 'Family Member'),
+                                phone: isSelf ? userProfile?.phone : (matchedMember?.phone || null),
+                                avatarUrl: isSelf ? userProfile?.avatar_url : (matchedMember?.avatar_url || null),
+                                lat: evt.lat || (isSelf ? myLocation?.lat : matchedMember?.lat),
+                                lng: evt.lng || (isSelf ? myLocation?.lng : matchedMember?.lng),
+                                battery: isSelf ? userBattery : (matchedMember?.battery || null),
+                                triggeredAt: evt.triggered_at || new Date().toISOString(),
+                                relationship: isSelf ? 'You' : (matchedMember?.relationship || 'Family'),
+                            });
+                        }
+                    });
+                    setActiveSOSAlerts(freshAlerts);
+                } else {
+                    setActiveSOSAlerts([]);
+                }
+            } catch (sosErr) {
+                // Non-blocking
+            }
+
             const nowIso = new Date().toISOString();
             setFamilyLocations(merged);
             setLastFetchTimestamp(nowIso);
@@ -960,10 +1168,18 @@ export default function FamilyTrackerScreen() {
     const MEMBER_COLORS = [Colors.family, Colors.tracker, Colors.hotline, Colors.emergencyPlan];
 
     // Sort family members:
-    // 1. Active members first (status.isActive === true)
-    // 2. Sort by last active time descending (newest activity first)
+    // 1. Members in active SOS / danger first
+    // 2. Active members next (status.isActive === true)
+    // 3. Sort by last active time descending (newest activity first)
     const sortedFamilyMembers = React.useMemo(() => {
         return [...familyLocations].sort((a, b) => {
+            const isSOSA = activeSOSAlerts.some((alert) => alert.userId === a.member_user_id || alert.userId === a.user_id || alert.userId === a.id);
+            const isSOSB = activeSOSAlerts.some((alert) => alert.userId === b.member_user_id || alert.userId === b.user_id || alert.userId === b.id);
+
+            // SOS members strictly first
+            if (isSOSA && !isSOSB) return -1;
+            if (!isSOSA && isSOSB) return 1;
+
             const hasLocA = Boolean(a.lat && a.lng);
             const hasLocB = Boolean(b.lat && b.lng);
             const statusA = getTrackingStatus(a.updated_at, hasLocA);
@@ -982,15 +1198,17 @@ export default function FamilyTrackerScreen() {
             const timeB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
             return timeB - timeA;
         });
-    }, [familyLocations]);
+    }, [familyLocations, activeSOSAlerts]);
 
     const members3D: FamilyMember3D[] = React.useMemo(() => {
         const list: FamilyMember3D[] = [];
+        const isSelfInSOS = activeSOSAlerts.some((a) => a.userId === user?.id);
+
         if (myLocation && user?.id) {
             list.push({
                 id: user.id,
                 memberUserId: user.id,
-                name: (userProfile?.name || 'You') + (isMarkedSafe ? ' ✓ Safe' : ''),
+                name: (userProfile?.name || 'You') + (isMarkedSafe ? ' ✓ Safe' : isSelfInSOS ? ' (SOS ACTIVE)' : ''),
                 avatarUrl: userProfile?.avatar_url,
                 latitude: myLocation.lat,
                 longitude: myLocation.lng,
@@ -1000,10 +1218,11 @@ export default function FamilyTrackerScreen() {
                 heading: userHeading,
                 isOnline: true,
                 lastUpdated: new Date().toISOString(),
-                color: isMarkedSafe ? '#16A34A' : Colors.sos,
+                color: isMarkedSafe ? '#16A34A' : isSelfInSOS ? '#DC2626' : Colors.sos,
                 routeHistory: userRouteHistory,
                 phone: userProfile?.phone,
                 relationship: 'You',
+                isSOS: isSelfInSOS,
             });
         }
 
@@ -1013,28 +1232,34 @@ export default function FamilyTrackerScreen() {
             if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
                 const status = getTrackingStatus(m.updated_at, true);
                 const assignedColor = MEMBER_COLORS[index % MEMBER_COLORS.length];
+                const matchedSOS = activeSOSAlerts.find(
+                    (a) => a.userId === m.member_user_id || a.userId === m.user_id || a.userId === m.id
+                );
+                const isMemberInSOS = Boolean(matchedSOS);
+
                 list.push({
                     id: m.id,
                     memberUserId: m.member_user_id || null,
                     name: m.name,
                     avatarUrl: m.avatar_url,
-                    latitude: lat,
-                    longitude: lng,
+                    latitude: matchedSOS?.lat || lat,
+                    longitude: matchedSOS?.lng || lng,
                     accuracy: m.accuracy ?? 5,
                     speed: m.speed ?? 0,
-                    batteryLevel: m.battery != null && m.battery > 0 ? (m.battery > 1 ? m.battery / 100 : m.battery) : null,
+                    batteryLevel: m.battery != null && m.battery > 0 ? (m.battery > 1 ? m.battery / 100 : m.battery) : (matchedSOS?.battery || null),
                     heading: m.heading != null && !isNaN(m.heading) ? m.heading : null,
                     isOnline: status.isActive,
                     lastUpdated: m.updated_at || new Date().toISOString(),
-                    color: assignedColor,
+                    color: isMemberInSOS ? '#DC2626' : assignedColor,
                     phone: m.phone,
                     relationship: m.relationship,
+                    isSOS: isMemberInSOS,
                 });
             }
         });
 
         return list;
-    }, [myLocation, user?.id, userProfile, userAccuracy, userSpeed, userBattery, userHeading, userRouteHistory, sortedFamilyMembers, isMarkedSafe]);
+    }, [myLocation, user?.id, userProfile, userAccuracy, userSpeed, userBattery, userHeading, userRouteHistory, sortedFamilyMembers, isMarkedSafe, activeSOSAlerts]);
 
     const selectedMember3D = React.useMemo(() => {
         if (!selectedMemberId) return null;
@@ -1509,6 +1734,21 @@ export default function FamilyTrackerScreen() {
                 ? ` (${smsResult.error})`
                 : '';
 
+            const localSOSAlert: ActiveSOSDanger = {
+                id: user.id,
+                userId: user.id,
+                name: userProfile?.name || 'You',
+                phone: userProfile?.phone || null,
+                avatarUrl: userProfile?.avatar_url || null,
+                lat: myLocation?.lat || 0,
+                lng: myLocation?.lng || 0,
+                battery: userBattery,
+                triggeredAt: new Date().toISOString(),
+                relationship: 'You',
+            };
+            setActiveSOSAlerts((prev) => [localSOSAlert, ...prev.filter((a) => a.userId !== user.id)]);
+            setDismissedSOSIds((prev) => prev.filter((id) => id !== user.id));
+
             showAlert({
                 title: '🚨 SOS & SMS BROADCASTED!',
                 message: `Emergency alert${smsRecipientText} with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
@@ -1544,6 +1784,22 @@ export default function FamilyTrackerScreen() {
         const nextState = !isMarkedSafe;
         setIsMarkedSafe(nextState);
 
+        if (nextState) {
+            setActiveSOSAlerts((prev) => prev.filter((a) => a.userId !== user?.id));
+            try {
+                if (user?.id) {
+                    await supabase.from('sos_events').update({ status: 'resolved' }).eq('user_id', user.id).eq('status', 'active');
+                    await supabase.channel('family-broadcast').send({
+                        type: 'broadcast',
+                        event: 'sos_resolved',
+                        payload: { user_id: user.id },
+                    });
+                }
+            } catch (e) {
+                console.warn('[MarkSafe] Resolve SOS error:', e);
+            }
+        }
+
         if (myLocation && user?.id) {
             try {
                 await supabase.from('tracker').upsert({
@@ -1568,6 +1824,136 @@ export default function FamilyTrackerScreen() {
     return (
         <View style={styles.container}>
             {/* Floating Offline Notification Banner */}
+            {!isLocalOnline && (
+                <View style={[styles.floatingOfflineBanner, { top: insets.top + 8 }]}>
+                    <View style={styles.offlinePulseDot} />
+                    <Ionicons name="cloud-offline" size={13} color="#FFFFFF" />
+                    <Text style={styles.floatingOfflineText} numberOfLines={1}>
+                        Offline • Data {formatFromAgo(lastFetchTimestamp)} • Live GPS Active
+                    </Text>
+                </View>
+            )}
+
+            {/* Animated Emergency SOS Danger Alert Banner */}
+            {visibleSOSAlert && (
+                <Animated.View
+                    style={[
+                        styles.dangerAlertBanner,
+                        {
+                            top: insets.top + (isLocalOnline ? 12 : 52),
+                            transform: [
+                                { translateY: dangerBannerAnim },
+                                { scale: dangerPulseAnim },
+                            ],
+                        },
+                    ]}
+                >
+                    <View style={styles.dangerAlertHeaderRow}>
+                        <View style={styles.dangerTitleGroup}>
+                            <Animated.View
+                                style={{
+                                    transform: [
+                                        {
+                                            rotate: dangerSirenRotate.interpolate({
+                                                inputRange: [-1, 0, 1],
+                                                outputRange: ['-16deg', '0deg', '16deg'],
+                                            }),
+                                        },
+                                    ],
+                                }}
+                            >
+                                <Ionicons name="warning" size={20} color="#FFFFFF" />
+                            </Animated.View>
+                            <Text style={styles.dangerAlertHeading}>
+                                {visibleSOSAlert.relationship === 'You' ? '🚨 YOUR SOS IS ACTIVE' : '🚨 FAMILY MEMBER IN DANGER!'}
+                            </Text>
+                        </View>
+                        <TouchableOpacity
+                            onPress={() => setDismissedSOSIds((prev) => [...prev, visibleSOSAlert.id])}
+                            style={styles.dangerDismissBtn}
+                            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                        >
+                            <Ionicons name="close" size={18} color="#FECACA" />
+                        </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.dangerMemberRow}>
+                        <View style={styles.dangerAvatarBadge}>
+                            {visibleSOSAlert.avatarUrl ? (
+                                <Image source={{ uri: visibleSOSAlert.avatarUrl }} style={styles.dangerAvatarImg} />
+                            ) : (
+                                <View style={styles.dangerAvatarFallback}>
+                                    <Text style={styles.dangerAvatarInitial}>
+                                        {visibleSOSAlert.name ? visibleSOSAlert.name.charAt(0).toUpperCase() : '?'}
+                                    </Text>
+                                </View>
+                            )}
+                            <View style={styles.dangerSirenMiniBadge}>
+                                <Ionicons name="flame" size={10} color="#FFFFFF" />
+                            </View>
+                        </View>
+
+                        <View style={styles.dangerInfoCol}>
+                            <Text style={styles.dangerMemberName} numberOfLines={1}>
+                                {visibleSOSAlert.name} {visibleSOSAlert.relationship === 'You' ? '(You)' : ''}
+                            </Text>
+                            <Text style={styles.dangerMetaText} numberOfLines={1}>
+                                ⚠️ SOS Active • {formatFromAgo(visibleSOSAlert.triggeredAt)}
+                                {visibleSOSAlert.battery != null && visibleSOSAlert.battery > 0
+                                    ? ` • 🔋 ${Math.round(visibleSOSAlert.battery > 1 ? visibleSOSAlert.battery : visibleSOSAlert.battery * 100)}%`
+                                    : ''}
+                            </Text>
+                        </View>
+                    </View>
+
+                    <View style={styles.dangerActionsRow}>
+                        <TouchableOpacity
+                            style={styles.dangerActionBtnLocate}
+                            activeOpacity={0.8}
+                            onPress={() => {
+                                if (visibleSOSAlert.lat && visibleSOSAlert.lng) {
+                                    focusOnMember(visibleSOSAlert.lat, visibleSOSAlert.lng, visibleSOSAlert.userId, visibleSOSAlert.name, visibleSOSAlert.triggeredAt);
+                                }
+                            }}
+                        >
+                            <Ionicons name="locate" size={16} color="#FFFFFF" />
+                            <Text style={styles.dangerActionBtnLocateText}>Locate</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.dangerActionBtnRoute}
+                            activeOpacity={0.85}
+                            onPress={() => {
+                                if (visibleSOSAlert.lat && visibleSOSAlert.lng) {
+                                    startTurnByTurnNavigation(
+                                        { latitude: visibleSOSAlert.lat, longitude: visibleSOSAlert.lng },
+                                        visibleSOSAlert.name,
+                                        visibleSOSAlert.userId
+                                    );
+                                }
+                            }}
+                        >
+                            <Ionicons name="navigate" size={16} color="#DC2626" />
+                            <Text style={styles.dangerActionBtnRouteText}>Rescue Route</Text>
+                        </TouchableOpacity>
+
+                        {visibleSOSAlert.phone ? (
+                            <TouchableOpacity
+                                style={styles.dangerActionBtnCall}
+                                activeOpacity={0.8}
+                                onPress={() => {
+                                    if (visibleSOSAlert.phone) {
+                                        Linking.openURL(`tel:${visibleSOSAlert.phone}`);
+                                    }
+                                }}
+                            >
+                                <Ionicons name="call" size={16} color="#FFFFFF" />
+                                <Text style={styles.dangerActionBtnCallText}>Call</Text>
+                            </TouchableOpacity>
+                        ) : null}
+                    </View>
+                </Animated.View>
+            )}
             {!isLocalOnline && (
                 <View style={[styles.floatingOfflineBanner, { top: insets.top + 8 }]}>
                     <View style={styles.offlinePulseDot} />
@@ -1843,35 +2229,44 @@ export default function FamilyTrackerScreen() {
                                     ? Math.round(rawBattery > 1 ? rawBattery : rawBattery * 100)
                                     : null;
                                 const speedKmh = item.speed && item.speed > 0.8 ? Math.round(item.speed * 3.6) : null;
+                                const matchedSOS = activeSOSAlerts.find(
+                                    (a) => a.userId === item.member_user_id || a.userId === item.user_id || a.userId === item.id
+                                );
+                                const isMemberInSOS = Boolean(matchedSOS);
 
                                 return (
                                     <TouchableOpacity
                                         style={[
                                             styles.memberCard,
                                             isSelected && styles.memberCardActive,
+                                            isMemberInSOS && styles.memberCardSOS,
                                         ]}
                                         onPress={() => focusOnMember(item.lat, item.lng, item.id, item.name, item.updated_at)}
                                         activeOpacity={0.7}
                                     >
                                         <View style={[
                                             styles.memberAvatar,
-                                            { borderColor: MEMBER_COLORS[index % MEMBER_COLORS.length] },
+                                            { borderColor: isMemberInSOS ? '#DC2626' : MEMBER_COLORS[index % MEMBER_COLORS.length] },
                                             isSelected && styles.memberAvatarActive,
+                                            isMemberInSOS && styles.memberAvatarSOS,
                                             !hasLocation && styles.memberAvatarOffline,
                                         ]}>
                                             {item.avatar_url ? (
                                                 <Image source={{ uri: item.avatar_url }} style={styles.avatarImg} />
                                             ) : (
-                                                <Text style={[styles.avatarText, { color: MEMBER_COLORS[index % MEMBER_COLORS.length] }]}>
+                                                <Text style={[styles.avatarText, { color: isMemberInSOS ? '#DC2626' : MEMBER_COLORS[index % MEMBER_COLORS.length] }]}>
                                                     {item.name.charAt(0).toUpperCase()}
                                                 </Text>
                                             )}
-                                            <View style={[styles.onlineBadge, { backgroundColor: status.color }]} />
+                                            <View style={[styles.onlineBadge, { backgroundColor: isMemberInSOS ? '#DC2626' : status.color }]}>
+                                                {isMemberInSOS && <Ionicons name="warning" size={7} color="#FFFFFF" />}
+                                            </View>
                                         </View>
                                         <Text
                                             style={[
                                                 styles.memberName,
                                                 isSelected && styles.memberNameActive,
+                                                isMemberInSOS && styles.memberNameSOS,
                                             ]}
                                             numberOfLines={1}
                                         >
@@ -1899,10 +2294,17 @@ export default function FamilyTrackerScreen() {
                                         ) : null}
 
                                         {/* Live Activity & Speed Indicator (From ... ago) */}
-                                        <View style={[styles.statusPill, { backgroundColor: isLocalOnline ? (status.color + '18') : '#F1F5F9' }]}>
-                                            <View style={[styles.statusMiniDot, { backgroundColor: isLocalOnline ? status.color : '#94A3B8' }]} />
-                                            <Text style={[styles.statusPillText, { color: isLocalOnline ? status.color : '#64748B' }]} numberOfLines={1}>
-                                                {!isLocalOnline
+                                        <View style={[
+                                            styles.statusPill,
+                                            isMemberInSOS
+                                                ? styles.statusPillSOS
+                                                : { backgroundColor: isLocalOnline ? (status.color + '18') : '#F1F5F9' }
+                                        ]}>
+                                            <View style={[styles.statusMiniDot, { backgroundColor: isMemberInSOS ? '#DC2626' : isLocalOnline ? status.color : '#94A3B8' }]} />
+                                            <Text style={[styles.statusPillText, isMemberInSOS ? styles.statusPillTextSOS : { color: isLocalOnline ? status.color : '#64748B' }]} numberOfLines={1}>
+                                                {isMemberInSOS
+                                                    ? 'IN DANGER'
+                                                    : !isLocalOnline
                                                     ? status.fromAgo
                                                     : speedKmh
                                                     ? `${speedKmh} km/h`
@@ -2336,5 +2738,188 @@ const styles = StyleSheet.create({
         color: '#DC2626',
         fontWeight: '600',
         fontSize: 12,
+    },
+    dangerAlertBanner: {
+        position: 'absolute',
+        left: 14,
+        right: 14,
+        zIndex: 950,
+        backgroundColor: '#DC2626',
+        borderRadius: BorderRadius.xl,
+        padding: 14,
+        borderWidth: 2,
+        borderColor: '#EF4444',
+        shadowColor: '#DC2626',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.65,
+        shadowRadius: 14,
+        elevation: 16,
+    },
+    dangerAlertHeaderRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 10,
+    },
+    dangerTitleGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flex: 1,
+    },
+    dangerAlertHeading: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    dangerDismissBtn: {
+        backgroundColor: 'rgba(0, 0, 0, 0.25)',
+        width: 26,
+        height: 26,
+        borderRadius: 13,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    dangerMemberRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        marginBottom: 12,
+    },
+    dangerAvatarBadge: {
+        position: 'relative',
+    },
+    dangerAvatarImg: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        borderWidth: 2.5,
+        borderColor: '#FFFFFF',
+    },
+    dangerAvatarFallback: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: '#7F1D1D',
+        borderWidth: 2.5,
+        borderColor: '#FFFFFF',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    dangerAvatarInitial: {
+        color: '#FFFFFF',
+        fontSize: 18,
+        fontWeight: '900',
+    },
+    dangerSirenMiniBadge: {
+        position: 'absolute',
+        bottom: -2,
+        right: -2,
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: '#B91C1C',
+        borderWidth: 1.5,
+        borderColor: '#FFFFFF',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    dangerInfoCol: {
+        flex: 1,
+    },
+    dangerMemberName: {
+        color: '#FFFFFF',
+        fontSize: 16,
+        fontWeight: '800',
+    },
+    dangerMetaText: {
+        color: '#FECACA',
+        fontSize: 12,
+        fontWeight: '600',
+        marginTop: 2,
+    },
+    dangerActionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    dangerActionBtnLocate: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        backgroundColor: 'rgba(0, 0, 0, 0.35)',
+        paddingVertical: 10,
+        borderRadius: BorderRadius.md,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.3)',
+    },
+    dangerActionBtnLocateText: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    dangerActionBtnRoute: {
+        flex: 1.3,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        backgroundColor: '#FFFFFF',
+        paddingVertical: 10,
+        borderRadius: BorderRadius.md,
+        shadowColor: '#000',
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    dangerActionBtnRouteText: {
+        color: '#DC2626',
+        fontSize: 13,
+        fontWeight: '800',
+    },
+    dangerActionBtnCall: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        backgroundColor: '#16A34A',
+        paddingVertical: 10,
+        paddingHorizontal: 14,
+        borderRadius: BorderRadius.md,
+    },
+    dangerActionBtnCallText: {
+        color: '#FFFFFF',
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    memberCardSOS: {
+        borderColor: '#DC2626',
+        borderWidth: 2,
+        backgroundColor: '#FEF2F2',
+    },
+    memberAvatarSOS: {
+        borderColor: '#DC2626',
+        borderWidth: 3,
+        shadowColor: '#DC2626',
+        shadowOpacity: 0.45,
+        shadowRadius: 6,
+        elevation: 6,
+    },
+    memberNameSOS: {
+        color: '#DC2626',
+        fontWeight: '800',
+    },
+    statusPillSOS: {
+        backgroundColor: '#FEE2E2',
+        borderColor: '#FCA5A5',
+        borderWidth: 1,
+    },
+    statusPillTextSOS: {
+        color: '#DC2626',
+        fontWeight: '800',
+        fontSize: 9.5,
     },
 });
