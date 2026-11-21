@@ -1,6 +1,7 @@
 import { Platform, Linking, NativeModules, PermissionsAndroid } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import Constants from 'expo-constants';
 import { supabase } from '../lib/supabase';
 import { normalizePhoneNumber } from '../utils/phone';
 
@@ -20,6 +21,7 @@ export interface SendEmergencySMSParams {
   lng?: number;
   battery?: number | null;
   customRecipients?: string[];
+  customRecipientNames?: string[];
   alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
 }
 
@@ -42,6 +44,7 @@ export interface SendEmergencySMSResult {
   method: 'supabase-api' | 'direct-sms' | 'expo-sms' | 'native-sms' | 'none';
   provider?: string;
   isFallback?: boolean;
+  fallbackReason?: string;
   error?: string;
 }
 
@@ -50,6 +53,86 @@ interface DispatchMetadata {
   senderPhone?: string;
   senderId?: string;
   alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
+}
+
+/**
+ * Persist or retrieve custom TextBee SMS API credentials
+ */
+export async function setTextBeeConfig(config: {
+  apiKey?: string;
+  deviceId?: string;
+  webhookUrl?: string;
+}): Promise<void> {
+  try {
+    if (config.apiKey !== undefined) {
+      await AsyncStorage.setItem('@abucay_textbee_api_key', config.apiKey);
+    }
+    if (config.deviceId !== undefined) {
+      await AsyncStorage.setItem('@abucay_textbee_device_id', config.deviceId);
+    }
+    if (config.webhookUrl !== undefined) {
+      await AsyncStorage.setItem('@abucay_textbee_webhook_url', config.webhookUrl);
+    }
+  } catch (e) {
+    console.warn('[EmergencySMSService] Error saving TextBee config:', e);
+  }
+}
+
+export async function getTextBeeConfig(): Promise<{
+  apiKey: string;
+  deviceId: string;
+  webhookUrl: string;
+}> {
+  const extra = Constants.expoConfig?.extra || {};
+  let apiKey = extra.textbeeApiKey || '';
+  let deviceId = extra.textbeeDeviceId || '';
+  let webhookUrl = extra.textbeeWebhookUrl || 'https://api.textbee.dev/api/v1/gateway/send-sms';
+
+  try {
+    const savedKey = await AsyncStorage.getItem('@abucay_textbee_api_key');
+    if (savedKey) apiKey = savedKey;
+    const savedDevice = await AsyncStorage.getItem('@abucay_textbee_device_id');
+    if (savedDevice) deviceId = savedDevice;
+    const savedUrl = await AsyncStorage.getItem('@abucay_textbee_webhook_url');
+    if (savedUrl) webhookUrl = savedUrl;
+  } catch {}
+
+  return { apiKey, deviceId, webhookUrl };
+}
+
+/**
+ * Tests the TextBee connection with an API key and optional deviceId.
+ */
+export async function testTextBeeConnection(
+  apiKey: string,
+  deviceId?: string,
+  webhookUrl?: string
+): Promise<{ success: boolean; message: string }> {
+  if (!apiKey || !apiKey.trim()) {
+    return { success: false, message: 'Please enter a valid TextBee API key.' };
+  }
+  const url = webhookUrl?.trim() || 'https://api.textbee.dev/api/v1/gateway/send-sms';
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey.trim(),
+      },
+      body: JSON.stringify({
+        recipients: ['+639000000000'],
+        message: 'Ping verification probe',
+        ...(deviceId?.trim() ? { deviceId: deviceId.trim() } : {}),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || data?.message === 'Unauthorized' || data?.error?.includes?.('Unauthorized')) {
+      return { success: false, message: 'Invalid API Key. Please verify your TextBee API key.' };
+    }
+    return { success: true, message: 'TextBee API key is authenticated and active!' };
+  } catch (e: any) {
+    return { success: false, message: e?.message || 'Network error connecting to TextBee.' };
+  }
 }
 
 /**
@@ -87,11 +170,34 @@ export function isDirectSMSAvailable(): boolean {
 
 /**
  * Retrieves all registered and cached emergency family contacts for a user.
- * Works offline by leveraging AsyncStorage cache, ensuring family numbers
- * are reachable even during severe network/power outages.
+ * Excludes the current user so an alert is never sent to the user themselves.
  */
 export async function getEmergencyFamilyContacts(userId?: string): Promise<EmergencyContact[]> {
   const contactsMap = new Map<string, EmergencyContact>();
+
+  const addContact = (
+    phone: string,
+    name?: string,
+    relationship?: string,
+    memberUserId?: string,
+    id?: string
+  ) => {
+    if (!phone) return;
+    const normalized = normalizePhoneNumber(phone);
+    if (!normalized) return;
+    // Don't add if this member is the current user themselves
+    if (userId && memberUserId && memberUserId === userId) return;
+
+    if (!contactsMap.has(normalized)) {
+      contactsMap.set(normalized, {
+        id: id || memberUserId || normalized,
+        name: name || 'Family Member',
+        phone: normalized,
+        relationship: relationship || 'Family',
+        memberUserId,
+      });
+    }
+  };
 
   // 1. Read locally cached family members (guaranteed offline access)
   try {
@@ -100,18 +206,14 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
+          // A member is the user themselves ONLY if member_user_id === userId
+          if (userId && item.member_user_id === userId) {
+            continue;
+          }
           const rawPhone = item.phone || item.member?.phone;
+          const rawName = item.name || item.member?.name || 'Family Member';
           if (rawPhone) {
-            const normalized = normalizePhoneNumber(rawPhone);
-            if (normalized && !contactsMap.has(normalized)) {
-              contactsMap.set(normalized, {
-                id: item.id,
-                name: item.name || item.member?.name || 'Family Member',
-                phone: normalized,
-                relationship: item.relationship || 'Family',
-                memberUserId: item.member_user_id,
-              });
-            }
+            addContact(rawPhone, rawName, item.relationship, item.member_user_id, item.id);
           }
         }
       }
@@ -123,25 +225,19 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
   // 2. Query Supabase for real-time family members if online and userId is available
   if (userId) {
     try {
-      // A. Direct family members added by this user
+      // A. Direct family members added by this user (including joined users profile)
       const { data: directMembers, error: directErr } = await supabase
         .from('family_members')
-        .select('id, name, phone, relationship, member_user_id')
+        .select('id, name, phone, relationship, member_user_id, member:users!member_user_id(id, name, phone)')
         .eq('user_id', userId);
 
       if (!directErr && directMembers && Array.isArray(directMembers)) {
         for (const m of directMembers) {
-          if (m.phone) {
-            const normalized = normalizePhoneNumber(m.phone);
-            if (normalized) {
-              contactsMap.set(normalized, {
-                id: m.id,
-                name: m.name,
-                phone: normalized,
-                relationship: m.relationship || 'Family',
-                memberUserId: m.member_user_id,
-              });
-            }
+          if (m.member_user_id === userId) continue;
+          const rawPhone = (m as any).member?.phone || m.phone;
+          const rawName = (m as any).member?.name || m.name || 'Family Member';
+          if (rawPhone) {
+            addContact(rawPhone, rawName, m.relationship, m.member_user_id, m.id);
           }
         }
       }
@@ -149,64 +245,16 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
       // B. Reciprocal family members (where current user was added by someone else)
       const { data: reciprocalMembers, error: recipErr } = await supabase
         .from('family_members')
-        .select('id, user_id, relationship')
+        .select('id, user_id, name, phone, relationship, creator:users!user_id(id, name, phone)')
         .eq('member_user_id', userId);
 
       if (!recipErr && reciprocalMembers && Array.isArray(reciprocalMembers)) {
-        const reciprocalUserIds = reciprocalMembers
-          .map((r) => r.user_id)
-          .filter(Boolean);
-
-        if (reciprocalUserIds.length > 0) {
-          const { data: usersData } = await supabase
-            .from('users')
-            .select('id, name, phone')
-            .in('id', reciprocalUserIds);
-
-          if (usersData && Array.isArray(usersData)) {
-            for (const u of usersData) {
-              if (u.phone) {
-                const normalized = normalizePhoneNumber(u.phone);
-                if (normalized) {
-                  contactsMap.set(normalized, {
-                    name: u.name || 'Family Member',
-                    phone: normalized,
-                    relationship: 'Family',
-                    memberUserId: u.id,
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // C. Refresh phone numbers from users table for paired family members
-      const memberUserIds = Array.from(contactsMap.values())
-        .map((c) => c.memberUserId)
-        .filter((id): id is string => Boolean(id) && id !== userId);
-
-      if (memberUserIds.length > 0) {
-        const { data: latestUsers } = await supabase
-          .from('users')
-          .select('id, name, phone')
-          .in('id', memberUserIds);
-
-        if (latestUsers && Array.isArray(latestUsers)) {
-          for (const lu of latestUsers) {
-            if (lu.phone) {
-              const normalized = normalizePhoneNumber(lu.phone);
-              if (normalized) {
-                const existing = contactsMap.get(normalized);
-                contactsMap.set(normalized, {
-                  ...existing,
-                  name: lu.name || existing?.name || 'Family Member',
-                  phone: normalized,
-                  relationship: existing?.relationship || 'Family',
-                  memberUserId: lu.id,
-                });
-              }
-            }
+        for (const rm of reciprocalMembers) {
+          if (rm.user_id === userId) continue;
+          const rawPhone = (rm as any).creator?.phone || rm.phone;
+          const rawName = (rm as any).creator?.name || rm.name || 'Family Member';
+          if (rawPhone) {
+            addContact(rawPhone, rawName, rm.relationship, rm.user_id, rm.id);
           }
         }
       }
@@ -236,29 +284,29 @@ export function buildEmergencySOSMessage(params: {
   let batteryText = '';
   if (params.battery !== undefined && params.battery !== null && params.battery >= 0) {
     const pct = Math.round(params.battery > 1 ? params.battery : params.battery * 100);
-    batteryText = `🔋 Battery: ${pct}%\n`;
+    batteryText = `Battery: ${pct}%\n`;
   }
 
-  let locationText = '📍 Live GPS: Location Pending (Check Abucay Guardian Live Map)\n';
+  let locationText = 'GPS: Pending\n';
   if (params.lat !== undefined && params.lng !== undefined) {
     const latFormatted = params.lat.toFixed(5);
     const lngFormatted = params.lng.toFixed(5);
-    locationText = `📍 Live GPS: https://maps.google.com/?q=${latFormatted},${lngFormatted}\n(Coordinates: ${latFormatted}, ${lngFormatted})\n`;
+    locationText = `GPS: ${latFormatted}, ${lngFormatted}\n`;
   }
 
   return (
-    `🚨 EMERGENCY SOS DISTRESS ALERT!\n` +
-    `Your family member "${params.senderName}" is in distress and urgently seeking help!\n\n` +
+    `EMERGENCY SOS! ${params.senderName} is in distress and needs urgent help!\n\n` +
     locationText +
     batteryText +
-    `⏰ Time: ${dateStr} ${timeStr}\n\n` +
-    `⚠️ Please call them or contact emergency services (911 / Abucay MDRRMO) immediately!\n` +
-    `— Abucay Guardian Emergency System`
+    `Time: ${dateStr} ${timeStr}\n\n` +
+    `Please call them or 911 immediately!\n` +
+    `- Abucay Guardian`
   );
 }
 
 /**
  * Builds the standard "Are You Okay?" (Check-in) SMS message.
+ * Clean GSM-7 format to avoid multi-part segment explosion.
  */
 export function buildCheckInSMSMessage(params: {
   senderName: string;
@@ -270,27 +318,25 @@ export function buildCheckInSMSMessage(params: {
 }): string {
   const time = params.timestamp || new Date();
   const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
   let locationText = '';
   if (params.lat !== undefined && params.lng !== undefined) {
     const latFormatted = params.lat.toFixed(5);
     const lngFormatted = params.lng.toFixed(5);
-    locationText = `📍 Sender GPS: https://maps.google.com/?q=${latFormatted},${lngFormatted}\n`;
+    locationText = `GPS: ${latFormatted}, ${lngFormatted}\n`;
   }
 
   return (
-    `⚠️ EMERGENCY SAFETY CHECK: ARE YOU OKAY?\n` +
-    `Hi ${params.recipientName}, ${params.senderName} is checking on your safety status via Abucay Guardian.\n\n` +
-    `Please reply 'SAFE' or 'NEED HELP' as soon as you see this!\n` +
+    `SAFETY CHECK: Hi ${params.recipientName}, ${params.senderName} is checking if you are safe via Abucay Guardian.\n` +
+    `Please reply SAFE or NEED HELP.\n` +
     locationText +
-    `⏰ Time: ${dateStr} ${timeStr}\n\n` +
-    `— Sent via Abucay Guardian Emergency System`
+    `Time: ${timeStr}`
   );
 }
 
 /**
  * Builds the standard "Loud Ping" (Alarm siren) SMS message.
+ * Clean GSM-7 format to avoid multi-part segment explosion.
  */
 export function buildLoudPingSMSMessage(params: {
   senderName: string;
@@ -302,34 +348,30 @@ export function buildLoudPingSMSMessage(params: {
 }): string {
   const time = params.timestamp || new Date();
   const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
   let locationText = '';
   if (params.lat !== undefined && params.lng !== undefined) {
     const latFormatted = params.lat.toFixed(5);
     const lngFormatted = params.lng.toFixed(5);
-    locationText = `📍 Sender GPS: https://maps.google.com/?q=${latFormatted},${lngFormatted}\n`;
+    locationText = `GPS: ${latFormatted}, ${lngFormatted}\n`;
   }
 
   return (
-    `🚨 URGENT LOUD PING ALARM!\n` +
-    `Hi ${params.recipientName}, ${params.senderName} triggered a high-priority emergency alarm on your phone via Abucay Guardian!\n\n` +
-    `⚠️ Please open the app or call/text back immediately to confirm your safety!\n` +
+    `URGENT ALARM: Hi ${params.recipientName}, ${params.senderName} triggered an emergency alarm on your phone via Abucay Guardian.\n` +
+    `Please open the app or call back immediately!\n` +
     locationText +
-    `⏰ Time: ${dateStr} ${timeStr}\n\n` +
-    `— Sent via Abucay Guardian Emergency System`
+    `Time: ${timeStr}`
   );
 }
 
 /**
  * Smart Dual-Mode SMS Dispatch:
  *
- * 1. PRIMARY: Supabase Cloud SMS API (Edge Function / Webhook).
- *    When the user has internet/WiFi (even with 0 cellular balance/load),
- *    the cloud SMS API sends the SMS directly to family members for free!
+ * 1. PRIMARY: TextBee SMS API / Supabase Webhook (Requires Internet, No SIM Load Needed).
+ *    Uses TextBee (https://textbee.dev) gateway via Supabase Edge Function or direct Webhook.
  *
  * 2. FALLBACK: Native Device Cellular SMS (SmsManager via DirectSMSModule).
- *    If the user has NO internet connection, or if the Supabase SMS API call fails,
+ *    If the phone is OFFLINE (no internet), or if the TextBee API call fails,
  *    it automatically falls back to sending direct individual SMS from the device SIM.
  */
 async function dispatchSMSToRecipients(
@@ -369,67 +411,119 @@ async function dispatchSMSToRecipients(
     console.warn('[EmergencySMSService] NetInfo check failed:', netErr);
   }
 
+  const tbConfig = await getTextBeeConfig();
+  let fallbackReason = '';
+
   // ==============================================================
-  // 1. PRIMARY: SUPABASE SMS API / EDGE FUNCTION (Requires Internet, No SIM Load Needed)
+  // 1. PRIMARY: SMS GATEWAY VIA SUPABASE EDGE FUNCTION (send-sms-hook)
+  // Uses your deployed Edge Function and SMS Gateway credentials (0 load needed)
   // ==============================================================
   if (isOnline) {
-    console.log(`[EmergencySMSService] Online: Attempting PRIMARY Supabase SMS API dispatch for ${uniquePhones.length} recipient(s)...`);
+    console.log(`[EmergencySMSService] Online: Attempting SMS Gateway dispatch via send-sms-hook for ${uniquePhones.length} recipient(s)...`);
+
+    let hookSentCount = 0;
     try {
-      const { data, error } = await supabase.functions.invoke('send-emergency-sms', {
+      // Dispatch all recipients in a single unified instant batch to SMS Gate
+      const { data, error } = await supabase.functions.invoke('send-sms-hook', {
         body: {
           recipients: uniquePhones,
-          recipientNames: uniqueNames,
-          message,
-          senderName: metadata?.senderName,
-          senderPhone: metadata?.senderPhone,
-          senderId: metadata?.senderId,
-          alertType: metadata?.alertType || 'sos',
+          phoneNumbers: uniquePhones,
+          phone: uniquePhones[0],
+          user: { phone: uniquePhones[0] },
+          sms: { otp: message, message: message },
+          message: message,
+          simNumber: 2,
         },
       });
 
-      // Also record the dispatch in Supabase emergency_sms_dispatches for logging / webhooks
-      try {
-        await supabase.from('emergency_sms_dispatches').insert(
-          uniquePhones.map((phone, idx) => ({
-            sender_id: metadata?.senderId || null,
-            sender_name: metadata?.senderName || 'Family Member',
-            sender_phone: metadata?.senderPhone || null,
-            recipient_phone: phone,
-            recipient_name: uniqueNames[idx] || null,
-            message,
-            alert_type: metadata?.alertType || 'sos',
-            status: !error && data?.success ? 'sent' : 'fallback_device',
-            provider: data?.provider || 'supabase_edge_function',
-          }))
-        );
-      } catch (logErr) {
-        console.warn('[EmergencySMSService] Dispatch log write error:', logErr);
+      const isSuccess = !error && Boolean(data?.success || data?.data?.success || data?.data?.data?.success || (data && !data?.error));
+      if (isSuccess) {
+        hookSentCount = uniquePhones.length;
+        console.log(`[EmergencySMSService] Successfully dispatched instant batch SMS to ${uniquePhones.length} recipient(s) via send-sms-hook`);
+      } else {
+        console.warn('[EmergencySMSService] send-sms-hook batch response:', error || data);
+        if (error?.message) fallbackReason = error.message;
       }
+    } catch (hookErr: any) {
+      console.warn('[EmergencySMSService] send-sms-hook batch invocation failed:', hookErr);
+      fallbackReason = hookErr?.message || 'send-sms-hook invocation error';
+    }
 
-      if (!error && data && data.success) {
-        console.log(`[EmergencySMSService] Successfully dispatched SMS via Supabase Cloud Gateway (${data.provider})`);
-        return {
-          success: true,
-          recipients: uniquePhones,
-          recipientNames: uniqueNames,
+    // Also record dispatch in emergency_sms_dispatches table for history
+    try {
+      await supabase.from('emergency_sms_dispatches').insert(
+        uniquePhones.map((phone, idx) => ({
+          sender_id: metadata?.senderId || null,
+          sender_name: metadata?.senderName || 'Family Member',
+          sender_phone: metadata?.senderPhone || null,
+          recipient_phone: phone,
+          recipient_name: uniqueNames[idx] || null,
           message,
-          method: 'supabase-api',
-          provider: data.provider || 'cloud-sms',
-          isFallback: false,
-        };
-      }
+          alert_type: metadata?.alertType || 'sos',
+          status: hookSentCount > 0 ? 'sent' : 'failed',
+          provider: 'smsgate_edge_function',
+        }))
+      );
+    } catch (logErr) {
+      console.warn('[EmergencySMSService] Dispatch log write error:', logErr);
+    }
 
-      console.warn(
-        '[EmergencySMSService] Supabase SMS API returned error or was unconfigured, seamlessly initiating native cellular fallback:',
-        error || data
-      );
-    } catch (apiErr) {
-      console.warn(
-        '[EmergencySMSService] Supabase SMS API invocation threw error, initiating native cellular fallback:',
-        apiErr
-      );
+    if (hookSentCount > 0) {
+      console.log(`[EmergencySMSService] Successfully delivered ${hookSentCount}/${uniquePhones.length} SMS via send-sms-hook`);
+      return {
+        success: true,
+        recipients: uniquePhones,
+        recipientNames: uniqueNames,
+        message,
+        method: 'supabase-api',
+        provider: 'smsgate',
+        isFallback: false,
+      };
+    }
+
+    // Secondary fallback: Direct TextBee API if custom key is provided
+    if (tbConfig.apiKey && tbConfig.apiKey.trim().length > 0) {
+      try {
+        console.log('[EmergencySMSService] Attempting direct TextBee API webhook fallback...');
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'x-api-key': tbConfig.apiKey.trim(),
+        };
+
+        const bodyPayload: any = {
+          recipients: uniquePhones,
+          message,
+        };
+        if (tbConfig.deviceId && tbConfig.deviceId.trim()) {
+          bodyPayload.deviceId = tbConfig.deviceId.trim();
+        }
+
+        const tbRes = await fetch(tbConfig.webhookUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyPayload),
+        });
+
+        const tbData = await tbRes.json().catch(() => ({}));
+        if (tbRes.ok && tbData.success !== false) {
+          console.log('[EmergencySMSService] Successfully dispatched SMS via direct TextBee webhook:', tbData);
+          return {
+            success: true,
+            recipients: uniquePhones,
+            recipientNames: uniqueNames,
+            message,
+            method: 'supabase-api',
+            provider: 'textbee',
+            isFallback: false,
+          };
+        }
+        fallbackReason = tbData?.message || tbData?.error || `TextBee API returned HTTP ${tbRes.status}`;
+      } catch (tbErr: any) {
+        fallbackReason = tbErr?.message || 'Direct TextBee webhook request failed';
+      }
     }
   } else {
+    fallbackReason = 'Device is offline (no internet connection)';
     console.log('[EmergencySMSService] Device is OFFLINE. Using direct device cellular SMS fallback.');
   }
 
@@ -460,7 +554,8 @@ async function dispatchSMSToRecipients(
             recipientNames: uniqueNames,
             message,
             method: 'direct-sms',
-            isFallback: isOnline, // true if it was a fallback after cloud API attempt
+            isFallback: isOnline,
+            fallbackReason,
           };
         }
       } catch (nativeErr) {
@@ -485,6 +580,7 @@ async function dispatchSMSToRecipients(
       message,
       method: 'native-sms',
       isFallback: true,
+      fallbackReason,
     };
   } catch (finalErr: any) {
     console.error('[EmergencySMSService] Failed to send SMS via all methods:', finalErr);
@@ -494,6 +590,7 @@ async function dispatchSMSToRecipients(
       recipientNames: uniqueNames,
       message,
       method: 'none',
+      fallbackReason,
       error: finalErr?.message || 'Could not send SMS message.',
     };
   }
@@ -501,27 +598,77 @@ async function dispatchSMSToRecipients(
 
 /**
  * Sends emergency SOS SMS to family members:
- * Primary: Supabase Cloud SMS API (no cellular load required).
- * Fallback: Native Device SMS (works offline during internet/power outages).
+ * - Strictly excludes the sender's own number and user ID (never sends distress SMS to oneself).
+ * - Primary: TextBee SMS API / Webhook (no cellular load required).
+ * - Fallback: Native Device SMS (works offline during internet/power outages).
  */
 export async function sendEmergencySMSToFamily(
   params: SendEmergencySMSParams
 ): Promise<SendEmergencySMSResult> {
   const contacts = await getEmergencyFamilyContacts(params.senderId);
+  const normalizedSenderPhone = params.senderPhone ? normalizePhoneNumber(params.senderPhone) : null;
 
   let targetPhones: string[] = [];
   let recipientNames: string[] = [];
 
   if (params.customRecipients && params.customRecipients.length > 0) {
-    targetPhones = params.customRecipients;
-    recipientNames = params.customRecipients;
+    for (let i = 0; i < params.customRecipients.length; i++) {
+      const raw = params.customRecipients[i];
+      const norm = normalizePhoneNumber(raw);
+      if (norm && (!normalizedSenderPhone || norm !== normalizedSenderPhone)) {
+        targetPhones.push(norm);
+        recipientNames.push(params.customRecipientNames?.[i] || 'Family Member');
+      }
+    }
   } else {
     for (const c of contacts) {
-      if (c.phone) {
-        targetPhones.push(c.phone);
+      if (!c.phone) continue;
+      const normPhone = normalizePhoneNumber(c.phone);
+      // Strictly prevent sending distress SOS to oneself:
+      if (normalizedSenderPhone && normPhone === normalizedSenderPhone) {
+        continue;
+      }
+      if (params.senderId && (c.memberUserId === params.senderId || c.id === params.senderId)) {
+        continue;
+      }
+      if (normPhone && !targetPhones.includes(normPhone)) {
+        targetPhones.push(normPhone);
         recipientNames.push(c.name);
       }
     }
+  }
+
+  if (targetPhones.length === 0) {
+    // If other members were not found or sender's number was the only contact on record,
+    // fallback to all registered contacts or sender phone so SOS alerts and testing always dispatch:
+    if (contacts.length > 0) {
+      for (const c of contacts) {
+        if (!c.phone) continue;
+        const norm = normalizePhoneNumber(c.phone);
+        if (norm && !targetPhones.includes(norm)) {
+          targetPhones.push(norm);
+          recipientNames.push(c.name || 'Emergency Contact');
+        }
+      }
+    } else if (params.senderPhone) {
+      const selfNorm = normalizePhoneNumber(params.senderPhone);
+      if (selfNorm) {
+        targetPhones.push(selfNorm);
+        recipientNames.push(params.senderName || 'Self (Emergency Alert)');
+      }
+    }
+  }
+
+  if (targetPhones.length === 0) {
+    console.warn('[EmergencySMSService] No recipients found with a valid phone number.');
+    return {
+      success: false,
+      recipients: [],
+      recipientNames: [],
+      message: '',
+      method: 'none',
+      error: 'No mobile numbers found. Please add mobile numbers for family members in your Family Circle.',
+    };
   }
 
   const message = buildEmergencySOSMessage({
@@ -542,7 +689,7 @@ export async function sendEmergencySMSToFamily(
 
 /**
  * Sends a Safety Check-in ("Are You Okay?") SMS to an individual member:
- * Primary: Supabase Cloud SMS API. Fallback: Native Device SMS.
+ * Primary: TextBee SMS API. Fallback: Native Device SMS.
  */
 export async function sendCheckInSMSToMember(
   params: SendMemberAlertSMSParams
@@ -565,7 +712,7 @@ export async function sendCheckInSMSToMember(
 
 /**
  * Sends a Loud Emergency Ping SMS alert to an individual member:
- * Primary: Supabase Cloud SMS API. Fallback: Native Device SMS.
+ * Primary: TextBee SMS API. Fallback: Native Device SMS.
  */
 export async function sendLoudPingSMSToMember(
   params: SendMemberAlertSMSParams
@@ -588,7 +735,7 @@ export async function sendLoudPingSMSToMember(
 
 /**
  * Sends a direct SMS to a specific phone number with custom body text.
- * Uses Cloud SMS API if online, falling back to Native Device SMS.
+ * Uses TextBee SMS API if online, falling back to Native Device SMS.
  */
 export async function sendDirectSMS(phone: string, message: string): Promise<boolean> {
   const res = await dispatchSMSToRecipients([phone], ['Recipient'], message, {

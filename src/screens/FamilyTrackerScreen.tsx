@@ -89,6 +89,7 @@ export default function FamilyTrackerScreen() {
     const prevCoordsRef = useRef<{ [userId: string]: { lat: number; lng: number } }>({});
     const collapseAnim = useRef(new Animated.Value(0)).current; // 0 = expanded, 1 = collapsed
     const mapRef = useRef<FamilyMap3DHandle>(null);
+    const isTriggeringSOSRef = useRef<boolean>(false);
 
     const collapseCard = () => {
         setIsCollapsed(true);
@@ -1404,120 +1405,139 @@ export default function FamilyTrackerScreen() {
     };
 
     const handleTriggerSOS = async () => {
-        if (!user?.id) return;
+        if (!user?.id || isTriggeringSOSRef.current) return;
+        isTriggeringSOSRef.current = true;
         Vibration.vibrate([0, 600, 200, 600, 200, 1000]);
 
-        const event = {
-            user_id: user.id,
-            lat: myLocation?.lat,
-            lng: myLocation?.lng,
-            triggered_at: new Date().toISOString(),
-            status: 'active',
-        };
-
         try {
-            const { error } = await supabase.from('sos_events').insert(event);
-            if (myLocation) {
-                await supabase.from('tracker').upsert({
-                    user_id: user.id,
-                    lat: myLocation.lat,
-                    lng: myLocation.lng,
-                    updated_at: new Date().toISOString(),
-                }, { onConflict: 'user_id' });
-            }
-            if (error) {
-                await queueSOSEvent(event);
-            }
-        } catch (e) {
-            await queueSOSEvent(event);
-        }
-
-        // Instant Realtime Peer Broadcast strictly to paired family circle members
-        try {
-            const targetFamilyUserIds = familyLocations
-                .map((m: any) => m.member_user_id)
-                .filter(Boolean);
-
-            await supabase.channel('family-broadcast').send({
-                type: 'broadcast',
-                event: 'sos_alert',
-                payload: {
-                    from_user_id: user.id,
-                    from_name: userProfile?.name || 'Family Member',
-                    from_avatar: userProfile?.avatar_url || null,
-                    from_phone: userProfile?.phone || null,
-                    lat: myLocation?.lat,
-                    lng: myLocation?.lng,
-                    battery: userBattery,
-                    target_family_user_ids: targetFamilyUserIds,
-                    triggered_at: new Date().toISOString(),
-                },
-            });
-
-            // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
-            if (targetFamilyUserIds.length > 0) {
-                sendEmergencyPushNotification(
-                    targetFamilyUserIds,
-                    '🚨 EMERGENCY SOS ALERT!',
-                    `${userProfile?.name || 'A family member'} broadcasted an emergency SOS! Tap to open live distress map.`,
-                    'sos',
-                    userProfile?.name || 'Family Member',
-                    myLocation?.lat,
-                    myLocation?.lng,
-                    userBattery
-                ).catch(() => {});
-            }
-        } catch (e) {
-            console.warn('[FamilyTracker] Broadcast SOS error:', e);
-        }
-
-        // Dispatch emergency SMS to all family members
-        let smsResult: any = null;
-        try {
-            smsResult = await sendEmergencySMSToFamily({
-                senderName: userProfile?.name || 'Family Member',
-                senderPhone: userProfile?.phone,
-                senderId: user.id,
+            const event = {
+                user_id: user.id,
                 lat: myLocation?.lat,
                 lng: myLocation?.lng,
-                battery: userBattery,
-            });
-        } catch (smsErr) {
-            console.warn('[FamilyTracker] SMS dispatch error:', smsErr);
-        }
+                triggered_at: new Date().toISOString(),
+                status: 'active',
+            };
 
-        const smsMethodTag = smsResult?.method === 'supabase-api'
-            ? ' (via Cloud SMS - 0 cellular load needed)'
-            : smsResult?.method === 'direct-sms'
-            ? ' (via SIM direct SMS fallback)'
-            : '';
-        const smsRecipientText = smsResult?.recipientNames?.length > 0
-            ? ` and individual SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}${smsMethodTag}`
-            : '';
+            try {
+                const { error } = await supabase.from('sos_events').insert(event);
+                if (myLocation) {
+                    await supabase.from('tracker').upsert({
+                        user_id: user.id,
+                        lat: myLocation.lat,
+                        lng: myLocation.lng,
+                        updated_at: new Date().toISOString(),
+                    }, { onConflict: 'user_id' });
+                }
+                if (error) {
+                    await queueSOSEvent(event);
+                }
+            } catch (e) {
+                await queueSOSEvent(event);
+            }
 
-        showAlert({
-            title: '🚨 SOS & SMS BROADCASTED!',
-            message: `Emergency alert${smsRecipientText} with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
-            type: 'error',
-            buttons: [
-                {
-                    text: 'Call 911 Emergency',
-                    onPress: () => Linking.openURL('tel:911'),
-                },
-                ...(smsResult?.recipients?.length > 0 ? [{
-                    text: 'Re-send SMS',
-                    onPress: () => sendEmergencySMSToFamily({
-                        senderName: userProfile?.name || 'Family Member',
-                        senderPhone: userProfile?.phone,
-                        senderId: user.id,
+            // Instant Realtime Peer Broadcast strictly to paired family circle members
+            try {
+                const targetFamilyUserIds = familyLocations
+                    .map((m: any) => m.member_user_id)
+                    .filter(Boolean);
+
+                await supabase.channel('family-broadcast').send({
+                    type: 'broadcast',
+                    event: 'sos_alert',
+                    payload: {
+                        from_user_id: user.id,
+                        from_name: userProfile?.name || 'Family Member',
+                        from_avatar: userProfile?.avatar_url || null,
+                        from_phone: userProfile?.phone || null,
                         lat: myLocation?.lat,
                         lng: myLocation?.lng,
                         battery: userBattery,
-                    }),
-                }] : []),
-                { text: 'OK', style: 'cancel' },
-            ],
-        });
+                        target_family_user_ids: targetFamilyUserIds,
+                        triggered_at: new Date().toISOString(),
+                    },
+                });
+
+                // Dispatch APNs Time-Sensitive push to wake locked screen / closed app
+                if (targetFamilyUserIds.length > 0) {
+                    sendEmergencyPushNotification(
+                        targetFamilyUserIds,
+                        '🚨 EMERGENCY SOS ALERT!',
+                        `${userProfile?.name || 'A family member'} broadcasted an emergency SOS! Tap to open live distress map.`,
+                        'sos',
+                        userProfile?.name || 'Family Member',
+                        myLocation?.lat,
+                        myLocation?.lng,
+                        userBattery
+                    ).catch(() => {});
+                }
+            } catch (e) {
+                console.warn('[FamilyTracker] Broadcast SOS error:', e);
+            }
+
+            // Dispatch emergency SMS to all family members
+            let smsResult: any = null;
+            try {
+                const customRecipients = familyLocations
+                    .map((m: any) => m.phone || m.member?.phone)
+                    .filter(Boolean);
+                const customRecipientNames = familyLocations
+                    .map((m: any) => m.name || m.member?.name || 'Family Member')
+                    .filter(Boolean);
+
+                smsResult = await sendEmergencySMSToFamily({
+                    senderName: userProfile?.name || 'Family Member',
+                    senderPhone: userProfile?.phone,
+                    senderId: user.id,
+                    lat: myLocation?.lat,
+                    lng: myLocation?.lng,
+                    battery: userBattery,
+                    customRecipients: customRecipients.length > 0 ? customRecipients : undefined,
+                    customRecipientNames: customRecipientNames.length > 0 ? customRecipientNames : undefined,
+                });
+            } catch (smsErr) {
+                console.warn('[FamilyTracker] SMS dispatch error:', smsErr);
+            }
+
+            const smsMethodTag = smsResult?.method === 'supabase-api'
+                ? ' (via SMS Gateway Webhook - 0 load needed)'
+                : smsResult?.method === 'direct-sms'
+                ? ' (via SIM direct SMS fallback)'
+                : '';
+            const smsRecipientText = smsResult?.recipientNames?.length > 0
+                ? ` and individual SMS distress messages have been sent to ${smsResult.recipientNames.join(', ')}${smsMethodTag}`
+                : smsResult?.error
+                ? ` (${smsResult.error})`
+                : '';
+
+            showAlert({
+                title: '🚨 SOS & SMS BROADCASTED!',
+                message: `Emergency alert${smsRecipientText} with live GPS coordinates (${myLocation?.lat ? myLocation.lat.toFixed(4) : 'Pending'}, ${myLocation?.lng ? myLocation.lng.toFixed(4) : 'Pending'}) and battery level (${Math.round(userBattery * 100)}%) has been sent to your family circle and emergency responders.`,
+                type: 'error',
+                buttons: [
+                    {
+                        text: 'Call 911 Emergency',
+                        onPress: () => Linking.openURL('tel:911'),
+                    },
+                    ...(smsResult?.recipients?.length > 0 ? [{
+                        text: 'Re-send SMS',
+                        onPress: () => sendEmergencySMSToFamily({
+                            senderName: userProfile?.name || 'Family Member',
+                            senderPhone: userProfile?.phone,
+                            senderId: user.id,
+                            lat: myLocation?.lat,
+                            lng: myLocation?.lng,
+                            battery: userBattery,
+                        }),
+                    }] : []),
+                    { text: 'OK', style: 'cancel' },
+                ],
+            });
+        } finally {
+            // Re-enable trigger after 5 seconds to prevent spam
+            setTimeout(() => {
+                isTriggeringSOSRef.current = false;
+            }, 5000);
+        }
     };
 
     const handleMarkSafe = async () => {

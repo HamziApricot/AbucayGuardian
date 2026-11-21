@@ -18,6 +18,9 @@ interface RequestPayload {
   senderPhone?: string;
   senderId?: string;
   alertType?: "sos" | "checkin" | "loud_ping" | "general";
+  textbeeApiKey?: string;
+  textbeeDeviceId?: string;
+  textbeeWebhookUrl?: string;
 }
 
 serve(async (req) => {
@@ -28,7 +31,18 @@ serve(async (req) => {
 
   try {
     const payload: RequestPayload = await req.json();
-    const { recipients, recipientNames = [], message, senderName = "Family Member", senderPhone, senderId, alertType = "sos" } = payload;
+    const {
+      recipients,
+      recipientNames = [],
+      message,
+      senderName = "Family Member",
+      senderPhone,
+      senderId,
+      alertType = "sos",
+      textbeeApiKey: reqTextbeeApiKey,
+      textbeeDeviceId: reqTextbeeDeviceId,
+      textbeeWebhookUrl: reqTextbeeWebhookUrl,
+    } = payload;
 
     if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
       return new Response(
@@ -44,7 +58,12 @@ serve(async (req) => {
       );
     }
 
-    // Load available SMS provider API credentials from Supabase secrets
+    // 1. TextBee SMS Gateway (https://textbee.dev) - Primary
+    const textbeeApiKey = reqTextbeeApiKey || Deno.env.get("TEXTBEE_API_KEY");
+    const textbeeDeviceId = reqTextbeeDeviceId || Deno.env.get("TEXTBEE_DEVICE_ID");
+    const textbeeWebhookUrl = reqTextbeeWebhookUrl || Deno.env.get("TEXTBEE_WEBHOOK_URL") || "https://api.textbee.dev/api/v1/gateway/send-sms";
+
+    // 2. Secondary Philippine & Global Providers
     const semaphoreApiKey = Deno.env.get("SEMAPHORE_API_KEY");
     const semaphoreSenderName = Deno.env.get("SEMAPHORE_SENDER_NAME") || "SEMAPHORE";
 
@@ -69,9 +88,46 @@ serve(async (req) => {
     const errors: Array<{ recipient: string; error: string }> = [];
 
     // ==============================================================
-    // PROVIDER 1: SEMAPHORE (Philippines Primary Gateway)
+    // PROVIDER 1: TEXTBEE (https://textbee.dev SMS API & Webhook)
     // ==============================================================
-    if (semaphoreApiKey) {
+    if (textbeeApiKey || Deno.env.get("TEXTBEE_WEBHOOK_URL")) {
+      providerUsed = "textbee";
+      try {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (textbeeApiKey) {
+          headers["x-api-key"] = textbeeApiKey;
+        }
+
+        const bodyPayload: any = {
+          recipients: recipients,
+          message: message,
+        };
+        if (textbeeDeviceId) {
+          bodyPayload.deviceId = textbeeDeviceId;
+        }
+
+        const res = await fetch(textbeeWebhookUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(bodyPayload),
+        });
+
+        const resData = await res.json().catch(() => ({}));
+        if (res.ok && resData.success !== false) {
+          sentCount = recipients.length;
+        } else {
+          errors.push({ recipient: "all", error: JSON.stringify(resData) });
+        }
+      } catch (err: any) {
+        errors.push({ recipient: "all", error: err?.message || "TextBee dispatch failed" });
+      }
+    }
+    // ==============================================================
+    // PROVIDER 2: SEMAPHORE (Philippines Alternative)
+    // ==============================================================
+    else if (semaphoreApiKey) {
       providerUsed = "semaphore";
       for (const recipient of recipients) {
         try {
@@ -97,7 +153,7 @@ serve(async (req) => {
       }
     }
     // ==============================================================
-    // PROVIDER 2: PHILSMS (Philippines Alternative Gateway)
+    // PROVIDER 3: PHILSMS (Philippines Alternative)
     // ==============================================================
     else if (philSmsToken) {
       providerUsed = "philsms";
@@ -128,7 +184,7 @@ serve(async (req) => {
       }
     }
     // ==============================================================
-    // PROVIDER 3: TWILIO (Global Gateway)
+    // PROVIDER 4: TWILIO (Global Gateway)
     // ==============================================================
     else if (twilioAccountSid && twilioAuthToken && twilioPhoneNumber) {
       providerUsed = "twilio";
@@ -163,7 +219,7 @@ serve(async (req) => {
       }
     }
     // ==============================================================
-    // PROVIDER 4: CUSTOM SMS WEBHOOK URL
+    // PROVIDER 5: CUSTOM SMS WEBHOOK URL
     // ==============================================================
     else if (customWebhookUrl) {
       providerUsed = "custom_webhook";
@@ -199,7 +255,7 @@ serve(async (req) => {
         JSON.stringify({
           success: false,
           error: "NO_SMS_PROVIDER_CONFIGURED",
-          message: "No cloud SMS gateway configured in Supabase secrets (set SEMAPHORE_API_KEY, PHILSMS_API_TOKEN, TWILIO_ACCOUNT_SID, or SMS_WEBHOOK_URL).",
+          message: "No cloud SMS gateway configured in Supabase secrets (set TEXTBEE_API_KEY, SEMAPHORE_API_KEY, PHILSMS_API_TOKEN, or SMS_WEBHOOK_URL).",
         }),
         { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

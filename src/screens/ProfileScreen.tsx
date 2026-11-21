@@ -15,6 +15,11 @@ import { decode } from 'base64-arraybuffer';
 import CountryCodePicker from '../components/CountryCodePicker';
 import PermissionsOnboardingScreen from './PermissionsOnboardingScreen';
 import { normalizePhoneNumber } from '../utils/phone';
+import {
+    getTextBeeConfig,
+    setTextBeeConfig,
+    testTextBeeConnection
+} from '../services/EmergencySMSService';
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
@@ -27,6 +32,56 @@ export default function ProfileScreen() {
     const [phone, setPhone] = useState(userProfile?.phone ?? '');
     const [saving, setSaving] = useState(false);
     const [uploadingAvatar, setUploadingAvatar] = useState(false);
+
+    // TextBee SMS Gateway Settings State
+    const [showTextBeeModal, setShowTextBeeModal] = useState(false);
+    const [tbApiKey, setTbApiKey] = useState('');
+    const [tbDeviceId, setTbDeviceId] = useState('');
+    const [tbWebhookUrl, setTbWebhookUrl] = useState('');
+    const [testingTb, setTestingTb] = useState(false);
+    const [savingTb, setSavingTb] = useState(false);
+    const [hasTbConfigured, setHasTbConfigured] = useState(false);
+
+    React.useEffect(() => {
+        getTextBeeConfig().then((cfg) => {
+            setTbApiKey(cfg.apiKey);
+            setTbDeviceId(cfg.deviceId);
+            setTbWebhookUrl(cfg.webhookUrl);
+            setHasTbConfigured(Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0));
+        });
+    }, []);
+
+    const handleSaveTextBee = async () => {
+        setSavingTb(true);
+        try {
+            await setTextBeeConfig({
+                apiKey: tbApiKey.trim(),
+                deviceId: tbDeviceId.trim(),
+                webhookUrl: tbWebhookUrl.trim(),
+            });
+            setHasTbConfigured(Boolean(tbApiKey.trim().length > 0));
+            showToast({ message: 'TextBee SMS gateway settings saved!', type: 'success' });
+            setShowTextBeeModal(false);
+        } catch (e: any) {
+            showAlert({ title: 'Save Failed', message: e?.message || 'Failed to save TextBee settings.', type: 'error' });
+        } finally {
+            setSavingTb(false);
+        }
+    };
+
+    const handleTestTextBee = async () => {
+        setTestingTb(true);
+        try {
+            const result = await testTextBeeConnection(tbApiKey, tbDeviceId, tbWebhookUrl);
+            showAlert({
+                title: result.success ? 'TextBee Connected!' : 'Connection Failed',
+                message: result.message,
+                type: result.success ? 'info' : 'error',
+            });
+        } finally {
+            setTestingTb(false);
+        }
+    };
 
     const handleSave = async () => {
         if (!name.trim() || !phone.trim()) {
@@ -373,6 +428,34 @@ export default function ProfileScreen() {
                         </View>
                         <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
                     </TouchableOpacity>
+
+                    <View style={{ height: 12 }} />
+
+                    {/* TextBee SMS Gateway Settings */}
+                    <TouchableOpacity
+                        style={styles.permissionActionRow}
+                        onPress={async () => {
+                            const cfg = await getTextBeeConfig();
+                            setTbApiKey(cfg.apiKey);
+                            setTbDeviceId(cfg.deviceId);
+                            setTbWebhookUrl(cfg.webhookUrl);
+                            setShowTextBeeModal(true);
+                        }}
+                        activeOpacity={0.7}
+                    >
+                        <View style={styles.permissionLeft}>
+                            <View style={[styles.infoIcon, { backgroundColor: '#0284C715' }]}>
+                                <Ionicons name="cloud-upload-outline" size={18} color="#0284C7" />
+                            </View>
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                                <Text style={styles.infoLabel}>TextBee SMS Gateway</Text>
+                                <Text style={styles.permissionSub}>
+                                    {hasTbConfigured ? 'Connected (API Key Active)' : 'Not configured (Tap to add key)'}
+                                </Text>
+                            </View>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                    </TouchableOpacity>
                 </View>
             </View>
 
@@ -448,6 +531,101 @@ export default function ProfileScreen() {
                     isSettingsMode={true}
                     onComplete={() => setShowPermissionsModal(false)}
                 />
+            </Modal>
+
+            {/* TextBee SMS Gateway Settings Modal */}
+            <Modal visible={showTextBeeModal} animationType="slide" transparent statusBarTranslucent>
+                <View style={styles.overlay}>
+                    <View style={styles.modal}>
+                        <View style={styles.modalHandle} />
+                        <Text style={styles.modalTitle}>TextBee SMS Gateway</Text>
+                        <Text style={styles.modalSub}>
+                            Connect your TextBee (textbee.dev) API to send cloud SMS alerts for free without mobile load.
+                        </Text>
+
+                        <View style={styles.form}>
+                            <View style={styles.formGroup}>
+                                <Text style={styles.fieldLabel}>TextBee API Key (Required)</Text>
+                                <View style={styles.inputContainer}>
+                                    <Ionicons name="key-outline" size={20} color={Colors.textLight} />
+                                    <TextInput
+                                        style={styles.fieldInput}
+                                        value={tbApiKey}
+                                        onChangeText={setTbApiKey}
+                                        placeholder="Paste your TextBee API key"
+                                        placeholderTextColor={Colors.textMuted}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                    />
+                                </View>
+                            </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.fieldLabel}>Device ID (Optional)</Text>
+                                <View style={styles.inputContainer}>
+                                    <Ionicons name="phone-portrait-outline" size={20} color={Colors.textLight} />
+                                    <TextInput
+                                        style={styles.fieldInput}
+                                        value={tbDeviceId}
+                                        onChangeText={setTbDeviceId}
+                                        placeholder="Optional specific Android device ID"
+                                        placeholderTextColor={Colors.textMuted}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                    />
+                                </View>
+                            </View>
+
+                            <View style={styles.formGroup}>
+                                <Text style={styles.fieldLabel}>Webhook / API Endpoint</Text>
+                                <View style={styles.inputContainer}>
+                                    <Ionicons name="link-outline" size={20} color={Colors.textLight} />
+                                    <TextInput
+                                        style={styles.fieldInput}
+                                        value={tbWebhookUrl}
+                                        onChangeText={setTbWebhookUrl}
+                                        placeholder="https://api.textbee.dev/api/v1/gateway/send-sms"
+                                        placeholderTextColor={Colors.textMuted}
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                    />
+                                </View>
+                            </View>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
+                            <TouchableOpacity
+                                style={[styles.cancelBtn, { flex: 1 }]}
+                                onPress={handleTestTextBee}
+                                disabled={testingTb}
+                            >
+                                {testingTb ? (
+                                    <ActivityIndicator size="small" color={Colors.text} />
+                                ) : (
+                                    <Text style={styles.cancelBtnText}>Test Ping</Text>
+                                )}
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.saveActionBtn, { flex: 1.5 }]}
+                                onPress={handleSaveTextBee}
+                                disabled={savingTb}
+                            >
+                                {savingTb ? (
+                                    <ActivityIndicator size="small" color={Colors.white} />
+                                ) : (
+                                    <Text style={styles.saveActionBtnText}>Save Gateway</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+
+                        <TouchableOpacity
+                            style={{ alignSelf: 'center', marginTop: 16 }}
+                            onPress={() => setShowTextBeeModal(false)}
+                        >
+                            <Text style={{ color: Colors.textMuted, fontWeight: '700', fontSize: 13 }}>Cancel / Close</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
             </Modal>
         </ScrollView>
     );

@@ -136,6 +136,9 @@
     "extra": {
       "supabaseUrl": "https://vmunbhnmuuncaswpfqtc.supabase.co",
       "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtdW5iaG5tdXVuY2Fzd3BmcXRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE5NzEzODksImV4cCI6MjA4NzU0NzM4OX0.bCY2V9aG8D0AFENiFTHQ3ozbgtCQcoXaMrkhf8n0T3A",
+      "textbeeApiKey": "",
+      "textbeeDeviceId": "",
+      "textbeeWebhookUrl": "https://api.textbee.dev/api/v1/gateway/send-sms",
       "eas": {
         "projectId": "b40f7c08-9592-4a00-ab00-33b67efe2b1e"
       }

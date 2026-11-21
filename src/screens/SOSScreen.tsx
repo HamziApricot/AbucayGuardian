@@ -32,6 +32,8 @@ export default function SOSScreen({ navigation }: Props) {
         names: string[];
         method?: string;
         isFallback?: boolean;
+        fallbackReason?: string;
+        error?: string;
     } | null>(null);
     const [lastSOSLocation, setLastSOSLocation] = useState<{ lat?: number; lng?: number }>({});
     const [deviceBattery, setDeviceBattery] = useState<number | null>(null);
@@ -39,6 +41,7 @@ export default function SOSScreen({ navigation }: Props) {
     const watchRef = useRef<any>(null);
     const pulseAnim = useRef(new Animated.Value(1)).current;
     const shakeAnim = useRef(new Animated.Value(0)).current;
+    const isTriggeringRef = useRef(false);
 
     // Pulsing background
     useEffect(() => {
@@ -62,10 +65,11 @@ export default function SOSScreen({ navigation }: Props) {
     }, []);
 
     const startSOS = () => {
+        if (isTriggeringRef.current || phase !== 'idle') return;
         setPhase('countdown');
         setCount(COUNTDOWN);
         Vibration.vibrate([0, 300, 200, 300]);
-        intervalRef.current = setInterval(async () => {
+        intervalRef.current = setInterval(() => {
             setCount((c) => {
                 if (c <= 1) {
                     clearInterval(intervalRef.current);
@@ -79,12 +83,15 @@ export default function SOSScreen({ navigation }: Props) {
 
     const cancelSOS = () => {
         clearInterval(intervalRef.current);
+        isTriggeringRef.current = false;
         setPhase('idle');
         setCount(COUNTDOWN);
         Vibration.cancel();
     };
 
     const triggerSOS = async () => {
+        if (isTriggeringRef.current) return;
+        isTriggeringRef.current = true;
         setPhase('sent');
         Vibration.vibrate([0, 500, 200, 500, 200, 1000]);
 
@@ -193,6 +200,14 @@ export default function SOSScreen({ navigation }: Props) {
                     names: smsResult.recipientNames,
                     method: smsResult.method,
                     isFallback: smsResult.isFallback,
+                    fallbackReason: smsResult.fallbackReason,
+                });
+            } else if (smsResult && !smsResult.success) {
+                setSmsStatus({
+                    sent: false,
+                    count: 0,
+                    names: [],
+                    error: smsResult.error || 'No other family members found to alert.',
                 });
             }
         } catch (smsErr) {
@@ -222,12 +237,16 @@ export default function SOSScreen({ navigation }: Props) {
         }
 
         const methodTag = smsResult?.method === 'supabase-api'
-            ? ' (via Cloud SMS - No load needed)'
+            ? ' (via SMS Gateway Webhook - No load needed)'
+            : smsResult?.isFallback && smsResult?.fallbackReason
+            ? ` (via SIM direct SMS fallback: ${smsResult.fallbackReason})`
             : smsResult?.method === 'direct-sms'
             ? ' (via SIM direct SMS fallback)'
             : '';
         const smsSummary = smsResult?.recipientNames?.length > 0
             ? ` and individual SMS distress message sent to ${smsResult.recipientNames.join(', ')}${methodTag}`
+            : smsResult?.error
+            ? ` (${smsResult.error})`
             : '';
 
         // Offer to call 911 or re-send SMS
@@ -309,22 +328,28 @@ export default function SOSScreen({ navigation }: Props) {
                         <View style={styles.smsAlertCard}>
                             <View style={styles.smsAlertHeader}>
                                 <Ionicons
-                                    name={smsStatus?.method === 'supabase-api' ? 'cloud-done' : 'chatbubbles'}
+                                    name={smsStatus?.method === 'supabase-api' ? 'cloud-done' : smsStatus?.error ? 'warning' : 'chatbubbles'}
                                     size={20}
-                                    color={smsStatus?.method === 'supabase-api' ? '#38BDF8' : '#10B981'}
+                                    color={smsStatus?.method === 'supabase-api' ? '#38BDF8' : smsStatus?.error ? '#F59E0B' : '#10B981'}
                                 />
                                 <Text style={styles.smsAlertTitle}>
                                     {smsStatus && smsStatus.count > 0
                                         ? smsStatus.method === 'supabase-api'
-                                            ? `Cloud SMS Sent (No Load Needed)`
-                                            : `Device SMS Sent (Offline Fallback)`
-                                        : 'Family SMS Dispatch Ready'}
+                                            ? `TextBee Cloud SMS Sent (No Load Needed)`
+                                            : `Device SIM Sent (Fallback)`
+                                        : smsStatus?.error
+                                            ? 'No Family Members on Record'
+                                            : 'Family SMS Dispatch Ready'}
                                 </Text>
                             </View>
                             <Text style={styles.smsAlertBody}>
                                 {smsStatus && smsStatus.names.length > 0
-                                    ? `${smsStatus.method === 'supabase-api' ? '☁️ Cloud API delivered distress SMS to: ' : '📶 SIM cellular SMS sent to: '}${smsStatus.names.join(', ')}`
-                                    : 'Emergency SMS with live GPS link prepared for family circle.'}
+                                    ? smsStatus.method === 'supabase-api'
+                                        ? `☁️ SMS Gateway webhook delivered to: ${smsStatus.names.join(', ')}`
+                                        : `📶 SIM cellular SMS sent to: ${smsStatus.names.join(', ')}${smsStatus.fallbackReason ? `\n(Fallback: ${smsStatus.fallbackReason})` : ''}`
+                                    : smsStatus?.error
+                                        ? smsStatus.error
+                                        : 'Emergency SMS with live GPS link prepared for family circle.'}
                             </Text>
                             <TouchableOpacity
                                 style={styles.resendSmsBtn}
@@ -347,7 +372,7 @@ export default function SOSScreen({ navigation }: Props) {
                             <Ionicons name="call" size={20} color={Colors.white} />
                             <Text style={styles.callText}>Call 911</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.doneBtn} onPress={() => { setPhase('idle'); navigation.goBack(); }}>
+                        <TouchableOpacity style={styles.doneBtn} onPress={() => { isTriggeringRef.current = false; setPhase('idle'); navigation.goBack(); }}>
                             <Text style={styles.doneBtnText}>Done</Text>
                         </TouchableOpacity>
                     </>

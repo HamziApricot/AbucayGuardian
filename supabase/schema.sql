@@ -184,6 +184,7 @@ on conflict do nothing;
 
 -- ==================== EMERGENCY SMS DISPATCHES & WEBHOOKS ====================
 -- Primary Cloud SMS queue: Webhooks can listen to INSERT events on this table
+-- (e.g. Supabase Database Webhook -> TextBee API https://api.textbee.dev/api/v1/gateway/send-sms)
 create table if not exists public.emergency_sms_dispatches (
   id uuid primary key default uuid_generate_v4(),
   sender_id uuid references auth.users(id) on delete set null,
@@ -194,7 +195,7 @@ create table if not exists public.emergency_sms_dispatches (
   message text not null,
   alert_type text not null default 'sos' check (alert_type in ('sos', 'checkin', 'loud_ping', 'general')),
   status text not null default 'pending' check (status in ('pending', 'sent', 'failed', 'fallback_device')),
-  provider text default 'supabase_api',
+  provider text default 'textbee',
   error_message text,
   created_at timestamptz default now()
 );
@@ -203,4 +204,5 @@ drop policy if exists "Users can insert emergency sms dispatches" on public.emer
 create policy "Users can insert emergency sms dispatches" on public.emergency_sms_dispatches for insert with check (true);
 drop policy if exists "Users can view emergency sms dispatches" on public.emergency_sms_dispatches;
 create policy "Users can view emergency sms dispatches" on public.emergency_sms_dispatches for select using (true);
+
 
