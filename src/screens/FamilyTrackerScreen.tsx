@@ -1139,9 +1139,14 @@ export default function FamilyTrackerScreen() {
             }
         }
 
+        const methodTag = smsResult?.method === 'supabase-api'
+            ? ' (via Cloud SMS - 0 load)'
+            : smsResult?.method === 'direct-sms'
+            ? ' (via SIM direct SMS)'
+            : '';
         showToast({
             message: member.phone
-                ? `Safety check & SMS sent to ${member.name}`
+                ? `Safety check & SMS sent to ${member.name}${methodTag}`
                 : `Safety check prompt sent to ${member.name}`,
             type: 'success',
         });
@@ -1370,10 +1375,15 @@ export default function FamilyTrackerScreen() {
             }
         }
 
+        const methodTag = smsResult?.method === 'supabase-api'
+            ? ' via Cloud SMS (0 cellular load needed)'
+            : smsResult?.method === 'direct-sms'
+            ? ' via SIM direct SMS (offline fallback)'
+            : '';
         showAlert({
             title: 'Loud Emergency Ping & SMS Sent',
             message: member.phone
-                ? `Triggered high-priority alarm sound and sent urgent SMS alert to ${member.name}.`
+                ? `Triggered high-priority alarm sound and sent urgent SMS alert to ${member.name}${methodTag}.`
                 : `Triggered high-priority alarm sound on ${member.name}'s phone.`,
             type: 'warning',
             buttons: [
@@ -1476,8 +1486,13 @@ export default function FamilyTrackerScreen() {
             console.warn('[FamilyTracker] SMS dispatch error:', smsErr);
         }
 
+        const smsMethodTag = smsResult?.method === 'supabase-api'
+            ? ' (via Cloud SMS - 0 cellular load needed)'
+            : smsResult?.method === 'direct-sms'
+            ? ' (via SIM direct SMS fallback)'
+            : '';
         const smsRecipientText = smsResult?.recipientNames?.length > 0
-            ? ` and SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}`
+            ? ` and individual SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}${smsMethodTag}`
             : '';
 
         showAlert({

@@ -181,3 +181,26 @@ insert into public.hotlines (name, number, category, icon, color) values
   ('Coast Guard Bataan', '(047) 890-1234', 'Emergency', 'boat', '#2176AE'),
   ('NBI Bataan', '(047) 901-2345', 'Government', 'finger-print', '#0D1F4E')
 on conflict do nothing;
+
+-- ==================== EMERGENCY SMS DISPATCHES & WEBHOOKS ====================
+-- Primary Cloud SMS queue: Webhooks can listen to INSERT events on this table
+create table if not exists public.emergency_sms_dispatches (
+  id uuid primary key default uuid_generate_v4(),
+  sender_id uuid references auth.users(id) on delete set null,
+  sender_name text not null,
+  sender_phone text,
+  recipient_phone text not null,
+  recipient_name text,
+  message text not null,
+  alert_type text not null default 'sos' check (alert_type in ('sos', 'checkin', 'loud_ping', 'general')),
+  status text not null default 'pending' check (status in ('pending', 'sent', 'failed', 'fallback_device')),
+  provider text default 'supabase_api',
+  error_message text,
+  created_at timestamptz default now()
+);
+alter table public.emergency_sms_dispatches enable row level security;
+drop policy if exists "Users can insert emergency sms dispatches" on public.emergency_sms_dispatches;
+create policy "Users can insert emergency sms dispatches" on public.emergency_sms_dispatches for insert with check (true);
+drop policy if exists "Users can view emergency sms dispatches" on public.emergency_sms_dispatches;
+create policy "Users can view emergency sms dispatches" on public.emergency_sms_dispatches for select using (true);
+

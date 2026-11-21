@@ -7,5 +7,10 @@
         "./src/*"
       ]
     }
-  }
+  },
+  "exclude": [
+    "node_modules",
+    "supabase",
+    "android"
+  ]
 }

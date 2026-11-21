@@ -30,6 +30,8 @@ export default function SOSScreen({ navigation }: Props) {
         sent: boolean;
         count: number;
         names: string[];
+        method?: string;
+        isFallback?: boolean;
     } | null>(null);
     const [lastSOSLocation, setLastSOSLocation] = useState<{ lat?: number; lng?: number }>({});
     const [deviceBattery, setDeviceBattery] = useState<number | null>(null);
@@ -189,6 +191,8 @@ export default function SOSScreen({ navigation }: Props) {
                     sent: smsResult.success,
                     count: smsResult.recipients.length,
                     names: smsResult.recipientNames,
+                    method: smsResult.method,
+                    isFallback: smsResult.isFallback,
                 });
             }
         } catch (smsErr) {
@@ -217,8 +221,13 @@ export default function SOSScreen({ navigation }: Props) {
             );
         }
 
+        const methodTag = smsResult?.method === 'supabase-api'
+            ? ' (via Cloud SMS - No load needed)'
+            : smsResult?.method === 'direct-sms'
+            ? ' (via SIM direct SMS fallback)'
+            : '';
         const smsSummary = smsResult?.recipientNames?.length > 0
-            ? ` and SMS distress message has been prepared for ${smsResult.recipientNames.join(', ')}`
+            ? ` and individual SMS distress message sent to ${smsResult.recipientNames.join(', ')}${methodTag}`
             : '';
 
         // Offer to call 911 or re-send SMS
@@ -299,16 +308,22 @@ export default function SOSScreen({ navigation }: Props) {
                         {/* SMS Distress Alert Status Card */}
                         <View style={styles.smsAlertCard}>
                             <View style={styles.smsAlertHeader}>
-                                <Ionicons name="chatbubbles" size={20} color="#10B981" />
+                                <Ionicons
+                                    name={smsStatus?.method === 'supabase-api' ? 'cloud-done' : 'chatbubbles'}
+                                    size={20}
+                                    color={smsStatus?.method === 'supabase-api' ? '#38BDF8' : '#10B981'}
+                                />
                                 <Text style={styles.smsAlertTitle}>
                                     {smsStatus && smsStatus.count > 0
-                                        ? `SMS Alert Sent (${smsStatus.count} Family Member${smsStatus.count > 1 ? 's' : ''})`
+                                        ? smsStatus.method === 'supabase-api'
+                                            ? `Cloud SMS Sent (No Load Needed)`
+                                            : `Device SMS Sent (Offline Fallback)`
                                         : 'Family SMS Dispatch Ready'}
                                 </Text>
                             </View>
                             <Text style={styles.smsAlertBody}>
                                 {smsStatus && smsStatus.names.length > 0
-                                    ? `Distress signal & GPS sent to: ${smsStatus.names.join(', ')}`
+                                    ? `${smsStatus.method === 'supabase-api' ? '☁️ Cloud API delivered distress SMS to: ' : '📶 SIM cellular SMS sent to: '}${smsStatus.names.join(', ')}`
                                     : 'Emergency SMS with live GPS link prepared for family circle.'}
                             </Text>
                             <TouchableOpacity

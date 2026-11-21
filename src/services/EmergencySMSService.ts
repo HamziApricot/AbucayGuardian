@@ -1,5 +1,6 @@
 import { Platform, Linking, NativeModules, PermissionsAndroid } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../lib/supabase';
 import { normalizePhoneNumber } from '../utils/phone';
 
@@ -19,15 +20,18 @@ export interface SendEmergencySMSParams {
   lng?: number;
   battery?: number | null;
   customRecipients?: string[];
+  alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
 }
 
 export interface SendMemberAlertSMSParams {
   senderName: string;
   senderPhone?: string;
+  senderId?: string;
   recipientName: string;
   recipientPhone: string;
   lat?: number;
   lng?: number;
+  alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
 }
 
 export interface SendEmergencySMSResult {
@@ -35,8 +39,17 @@ export interface SendEmergencySMSResult {
   recipients: string[];
   recipientNames: string[];
   message: string;
-  method: 'direct-sms' | 'expo-sms' | 'native-sms' | 'none';
+  method: 'supabase-api' | 'direct-sms' | 'expo-sms' | 'native-sms' | 'none';
+  provider?: string;
+  isFallback?: boolean;
   error?: string;
+}
+
+interface DispatchMetadata {
+  senderName?: string;
+  senderPhone?: string;
+  senderId?: string;
+  alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
 }
 
 /**
@@ -53,7 +66,7 @@ export async function requestSMSPermissionIfNeeded(): Promise<boolean> {
       PermissionsAndroid.PERMISSIONS.SEND_SMS,
       {
         title: 'Emergency SMS Permission',
-        message: 'Abucay Guardian needs permission to send direct emergency SMS alerts to your family members without opening the messaging app.',
+        message: 'Abucay Guardian needs permission to send direct emergency SMS alerts to your family members if internet is unavailable.',
         buttonPositive: 'Allow',
         buttonNegative: 'Deny',
       }
@@ -309,13 +322,21 @@ export function buildLoudPingSMSMessage(params: {
 }
 
 /**
- * Core dispatch function: sends direct SMS messages to individual members
- * without creating a group and without opening the external Messages app.
+ * Smart Dual-Mode SMS Dispatch:
+ *
+ * 1. PRIMARY: Supabase Cloud SMS API (Edge Function / Webhook).
+ *    When the user has internet/WiFi (even with 0 cellular balance/load),
+ *    the cloud SMS API sends the SMS directly to family members for free!
+ *
+ * 2. FALLBACK: Native Device Cellular SMS (SmsManager via DirectSMSModule).
+ *    If the user has NO internet connection, or if the Supabase SMS API call fails,
+ *    it automatically falls back to sending direct individual SMS from the device SIM.
  */
-async function dispatchDirectSMSToRecipients(
+async function dispatchSMSToRecipients(
   targetPhones: string[],
   recipientNames: string[],
-  message: string
+  message: string,
+  metadata?: DispatchMetadata
 ): Promise<SendEmergencySMSResult> {
   const uniquePhones: string[] = [];
   const uniqueNames: string[] = [];
@@ -339,23 +360,96 @@ async function dispatchDirectSMSToRecipients(
     };
   }
 
-  console.log(`[EmergencySMSService] Dispatching direct individual SMS to ${uniquePhones.length} recipient(s):`, uniquePhones);
+  // Check network connectivity
+  let isOnline = false;
+  try {
+    const netState = await NetInfo.fetch();
+    isOnline = Boolean(netState.isConnected && netState.isInternetReachable !== false);
+  } catch (netErr) {
+    console.warn('[EmergencySMSService] NetInfo check failed:', netErr);
+  }
 
-  // METHOD 1: Native Direct SMS (Android SmsManager) - Sends directly, NO group, NO messages app opened!
+  // ==============================================================
+  // 1. PRIMARY: SUPABASE SMS API / EDGE FUNCTION (Requires Internet, No SIM Load Needed)
+  // ==============================================================
+  if (isOnline) {
+    console.log(`[EmergencySMSService] Online: Attempting PRIMARY Supabase SMS API dispatch for ${uniquePhones.length} recipient(s)...`);
+    try {
+      const { data, error } = await supabase.functions.invoke('send-emergency-sms', {
+        body: {
+          recipients: uniquePhones,
+          recipientNames: uniqueNames,
+          message,
+          senderName: metadata?.senderName,
+          senderPhone: metadata?.senderPhone,
+          senderId: metadata?.senderId,
+          alertType: metadata?.alertType || 'sos',
+        },
+      });
+
+      // Also record the dispatch in Supabase emergency_sms_dispatches for logging / webhooks
+      try {
+        await supabase.from('emergency_sms_dispatches').insert(
+          uniquePhones.map((phone, idx) => ({
+            sender_id: metadata?.senderId || null,
+            sender_name: metadata?.senderName || 'Family Member',
+            sender_phone: metadata?.senderPhone || null,
+            recipient_phone: phone,
+            recipient_name: uniqueNames[idx] || null,
+            message,
+            alert_type: metadata?.alertType || 'sos',
+            status: !error && data?.success ? 'sent' : 'fallback_device',
+            provider: data?.provider || 'supabase_edge_function',
+          }))
+        );
+      } catch (logErr) {
+        console.warn('[EmergencySMSService] Dispatch log write error:', logErr);
+      }
+
+      if (!error && data && data.success) {
+        console.log(`[EmergencySMSService] Successfully dispatched SMS via Supabase Cloud Gateway (${data.provider})`);
+        return {
+          success: true,
+          recipients: uniquePhones,
+          recipientNames: uniqueNames,
+          message,
+          method: 'supabase-api',
+          provider: data.provider || 'cloud-sms',
+          isFallback: false,
+        };
+      }
+
+      console.warn(
+        '[EmergencySMSService] Supabase SMS API returned error or was unconfigured, seamlessly initiating native cellular fallback:',
+        error || data
+      );
+    } catch (apiErr) {
+      console.warn(
+        '[EmergencySMSService] Supabase SMS API invocation threw error, initiating native cellular fallback:',
+        apiErr
+      );
+    }
+  } else {
+    console.log('[EmergencySMSService] Device is OFFLINE. Using direct device cellular SMS fallback.');
+  }
+
+  // ==============================================================
+  // 2. FALLBACK: NATIVE DEVICE CELLULAR SMS (No Internet Needed, Uses SIM Radio)
+  // ==============================================================
   if (Platform.OS === 'android' && NativeModules?.DirectSMS) {
     const hasPermission = await requestSMSPermissionIfNeeded();
     if (hasPermission) {
       try {
         let sentCount = 0;
-        // Loop individually to ensure separate individual SMS delivery (NO group)
+        // Transmit individual messages (never create a group MMS/SMS thread)
         for (let i = 0; i < uniquePhones.length; i++) {
           const phone = uniquePhones[i];
           try {
             await NativeModules.DirectSMS.sendDirectSMS(phone, message);
             sentCount++;
-            console.log(`[EmergencySMSService] Direct SMS delivered to individual member ${phone}`);
+            console.log(`[EmergencySMSService] Direct cellular SMS delivered to individual recipient ${phone}`);
           } catch (individualErr) {
-            console.warn(`[EmergencySMSService] Direct SMS to ${phone} failed:`, individualErr);
+            console.warn(`[EmergencySMSService] Direct cellular SMS to ${phone} failed:`, individualErr);
           }
         }
 
@@ -366,20 +460,22 @@ async function dispatchDirectSMSToRecipients(
             recipientNames: uniqueNames,
             message,
             method: 'direct-sms',
+            isFallback: isOnline, // true if it was a fallback after cloud API attempt
           };
         }
       } catch (nativeErr) {
-        console.warn('[EmergencySMSService] DirectSMS native module failed, falling back:', nativeErr);
+        console.warn('[EmergencySMSService] DirectSMS native module failed, falling back to OS dialer:', nativeErr);
       }
     } else {
       console.warn('[EmergencySMSService] SEND_SMS permission was denied by user.');
     }
   }
 
-  // METHOD 2: Fallback to individual SMS url for iOS / permission-denied
+  // ==============================================================
+  // 3. FINAL RESORT: NATIVE SMS INTENT (iOS / Denied Permission)
+  // ==============================================================
   try {
     const separator = Platform.OS === 'ios' ? '&' : '?';
-    // Open primary recipient individually (never create a group)
     const singleUrl = `sms:${uniquePhones[0]}${separator}body=${encodeURIComponent(message)}`;
     await Linking.openURL(singleUrl);
     return {
@@ -388,9 +484,10 @@ async function dispatchDirectSMSToRecipients(
       recipientNames: [uniqueNames[0]],
       message,
       method: 'native-sms',
+      isFallback: true,
     };
   } catch (finalErr: any) {
-    console.error('[EmergencySMSService] Failed to send SMS:', finalErr);
+    console.error('[EmergencySMSService] Failed to send SMS via all methods:', finalErr);
     return {
       success: false,
       recipients: uniquePhones,
@@ -403,7 +500,9 @@ async function dispatchDirectSMSToRecipients(
 }
 
 /**
- * Sends emergency SOS SMS directly to each individual family member (NO group, NO messages app opened).
+ * Sends emergency SOS SMS to family members:
+ * Primary: Supabase Cloud SMS API (no cellular load required).
+ * Fallback: Native Device SMS (works offline during internet/power outages).
  */
 export async function sendEmergencySMSToFamily(
   params: SendEmergencySMSParams
@@ -433,11 +532,17 @@ export async function sendEmergencySMSToFamily(
     battery: params.battery,
   });
 
-  return dispatchDirectSMSToRecipients(targetPhones, recipientNames, message);
+  return dispatchSMSToRecipients(targetPhones, recipientNames, message, {
+    senderName: params.senderName,
+    senderPhone: params.senderPhone,
+    senderId: params.senderId,
+    alertType: params.alertType || 'sos',
+  });
 }
 
 /**
- * Sends a Safety Check-in ("Are You Okay?") SMS directly to an individual member.
+ * Sends a Safety Check-in ("Are You Okay?") SMS to an individual member:
+ * Primary: Supabase Cloud SMS API. Fallback: Native Device SMS.
  */
 export async function sendCheckInSMSToMember(
   params: SendMemberAlertSMSParams
@@ -450,11 +555,17 @@ export async function sendCheckInSMSToMember(
     lng: params.lng,
   });
 
-  return dispatchDirectSMSToRecipients([params.recipientPhone], [params.recipientName], message);
+  return dispatchSMSToRecipients([params.recipientPhone], [params.recipientName], message, {
+    senderName: params.senderName,
+    senderPhone: params.senderPhone,
+    senderId: params.senderId,
+    alertType: 'checkin',
+  });
 }
 
 /**
- * Sends a Loud Emergency Ping SMS alert directly to an individual member.
+ * Sends a Loud Emergency Ping SMS alert to an individual member:
+ * Primary: Supabase Cloud SMS API. Fallback: Native Device SMS.
  */
 export async function sendLoudPingSMSToMember(
   params: SendMemberAlertSMSParams
@@ -467,36 +578,21 @@ export async function sendLoudPingSMSToMember(
     lng: params.lng,
   });
 
-  return dispatchDirectSMSToRecipients([params.recipientPhone], [params.recipientName], message);
+  return dispatchSMSToRecipients([params.recipientPhone], [params.recipientName], message, {
+    senderName: params.senderName,
+    senderPhone: params.senderPhone,
+    senderId: params.senderId,
+    alertType: 'loud_ping',
+  });
 }
 
 /**
- * Sends a direct SMS to a specific phone number with custom body text without opening messages app.
+ * Sends a direct SMS to a specific phone number with custom body text.
+ * Uses Cloud SMS API if online, falling back to Native Device SMS.
  */
 export async function sendDirectSMS(phone: string, message: string): Promise<boolean> {
-  const normalized = normalizePhoneNumber(phone);
-  if (!normalized) return false;
-
-  if (Platform.OS === 'android' && NativeModules?.DirectSMS) {
-    const hasPermission = await requestSMSPermissionIfNeeded();
-    if (hasPermission) {
-      try {
-        await NativeModules.DirectSMS.sendDirectSMS(normalized, message);
-        return true;
-      } catch (e) {
-        console.warn('[EmergencySMSService] DirectSMS sendDirectSMS error:', e);
-      }
-    }
-  }
-
-  // Fallback
-  const separator = Platform.OS === 'ios' ? '&' : '?';
-  const url = `sms:${normalized}${separator}body=${encodeURIComponent(message)}`;
-  try {
-    await Linking.openURL(url);
-    return true;
-  } catch (e) {
-    console.warn('[EmergencySMSService] Linking openURL error:', e);
-    return false;
-  }
+  const res = await dispatchSMSToRecipients([phone], ['Recipient'], message, {
+    alertType: 'general',
+  });
+  return res.success;
 }
