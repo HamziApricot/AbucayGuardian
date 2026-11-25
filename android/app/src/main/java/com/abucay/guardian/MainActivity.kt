@@ -20,21 +20,29 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
-  // Covert volume pattern state: UP -> UP -> DOWN -> UP within 2.5 seconds
+  // Covert volume pattern state: UP -> UP -> DOWN -> UP within 4.0 seconds
   private val keyTimestamps = mutableListOf<Long>()
   private val keySequence = mutableListOf<Int>()
+  private var suppressNextUpKeyCode: Int? = null
   private val TARGET_PATTERN = listOf(
     KeyEvent.KEYCODE_VOLUME_UP,
     KeyEvent.KEYCODE_VOLUME_UP,
     KeyEvent.KEYCODE_VOLUME_DOWN,
     KeyEvent.KEYCODE_VOLUME_UP
   )
-  private val PATTERN_WINDOW_MS = 2500L
+  private val PATTERN_WINDOW_MS = 4000L
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-    if (event.action == KeyEvent.ACTION_DOWN) {
-      val keyCode = event.keyCode
-      if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+    val keyCode = event.keyCode
+    if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+      // Consume the key-up event matching our suppressed final trigger press
+      if (event.action == KeyEvent.ACTION_UP && suppressNextUpKeyCode == keyCode) {
+        suppressNextUpKeyCode = null
+        return true
+      }
+
+      // Only count fresh physical presses (ignore key-hold auto-repeats)
+      if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
         val now = System.currentTimeMillis()
         while (keyTimestamps.isNotEmpty() && (now - keyTimestamps.first()) > PATTERN_WINDOW_MS) {
           keyTimestamps.removeAt(0)
@@ -48,6 +56,7 @@ class MainActivity : ReactActivity() {
           if (tail == TARGET_PATTERN) {
             keyTimestamps.clear()
             keySequence.clear()
+            suppressNextUpKeyCode = keyCode
             emitCovertVolumeEvent()
             return true // Consumes the event to suppress the Android system volume slider HUD
           }
@@ -59,6 +68,11 @@ class MainActivity : ReactActivity() {
 
   private fun emitCovertVolumeEvent() {
     try {
+      // Primary: emit through registered ReactApplicationContext (reliable in Bridgeless & New Architecture)
+      if (EmergencyAudioModule.emitCovertVolumeEvent()) {
+        return
+      }
+      // Fallback: ReactApplication.reactHost / reactInstanceManager
       val context = (application as? ReactApplication)?.reactHost?.currentReactContext
         ?: try { reactInstanceManager?.currentReactContext } catch (_: Throwable) { null }
       context

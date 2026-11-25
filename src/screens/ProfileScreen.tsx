@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useAlert } from '../context/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
@@ -30,6 +31,7 @@ import {
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
+    const navigation = useNavigation<any>();
     const insets = useSafeAreaInsets();
     const { showAlert, showToast } = useAlert();
     const [editing, setEditing] = useState(false);
@@ -474,7 +476,7 @@ export default function ProfileScreen() {
                     {/* Disguised Tools & Covert SOS Trigger */}
                     <TouchableOpacity
                         style={styles.permissionActionRow}
-                        onPress={() => setShowCovertModal(true)}
+                        onPress={() => navigation.navigate('CovertCalculator')}
                         activeOpacity={0.7}
                     >
                         <View style={styles.permissionLeft}>

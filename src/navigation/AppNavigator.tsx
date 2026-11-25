@@ -26,9 +26,11 @@ import FamilyTrackerScreen from '../screens/FamilyTrackerScreen';
 import FamilyMembersScreen from '../screens/FamilyMembersScreen';
 import EmergencyPlanScreen from '../screens/EmergencyPlanScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import DisguisedCalculator from '../components/DisguisedCalculator';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
+const RootStack = createNativeStackNavigator();
 
 const TAB_CONFIG = [
     { name: 'Home', label: 'Home', icon: 'home', activeIcon: 'home', color: Colors.secondary },
@@ -115,6 +117,23 @@ function HomeStack() {
     );
 }
 
+function CovertCalculatorScreen({ navigation }: any) {
+    return <DisguisedCalculator onClose={() => navigation.goBack()} />;
+}
+
+function AuthenticatedRootStack() {
+    return (
+        <RootStack.Navigator screenOptions={{ headerShown: false }}>
+            <RootStack.Screen name="MainTabs" component={MainTabs} />
+            <RootStack.Screen
+                name="CovertCalculator"
+                component={CovertCalculatorScreen}
+                options={{ animation: 'slide_from_bottom' }}
+            />
+        </RootStack.Navigator>
+    );
+}
+
 // Auth Stack
 function AuthStack() {
     return (
@@ -165,7 +184,7 @@ export default function AppNavigator() {
                 />
             );
         }
-        return <MainTabs />;
+        return <AuthenticatedRootStack />;
     }
 
     return <AuthStack />;

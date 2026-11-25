@@ -17,7 +17,9 @@ import {
   resolveSilentSOS,
   getCovertSettings,
   saveCovertSettings,
+  getActiveSilentSOSStatus,
   type CovertSettings,
+  type ActiveSilentSOSStatus,
   DEFAULT_COVERT_SETTINGS,
 } from '../services/SilentSOSService';
 
@@ -182,20 +184,27 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
   const [pinInput, setPinInput] = useState(DEFAULT_COVERT_SETTINGS.secretPin);
   const [allClearStatus, setAllClearStatus] = useState<string | null>(null);
   const [isResolving, setIsResolving] = useState(false);
+  const [activeSosInfo, setActiveSosInfo] = useState<ActiveSilentSOSStatus | null>(null);
 
-  const { display, handlePress, refreshSettings } = useCovertCalculator();
+  const { display, handlePress, refreshSettings } = useCovertCalculator(() => {
+    setTimeout(() => {
+      getActiveSilentSOSStatus().then(setActiveSosInfo);
+    }, 300);
+  });
 
   useEffect(() => {
     getCovertSettings().then((s) => {
       setSettings(s);
       setPinInput(s.secretPin);
     });
+    getActiveSilentSOSStatus().then(setActiveSosInfo);
   }, []);
 
   const openSettings = () => {
-    getCovertSettings().then((s) => {
+    Promise.all([getCovertSettings(), getActiveSilentSOSStatus()]).then(([s, sosStatus]) => {
       setSettings(s);
       setPinInput(s.secretPin);
+      setActiveSosInfo(sosStatus);
       setAllClearStatus(null);
       setShowSettingsModal(true);
     });
@@ -217,6 +226,7 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
     setIsResolving(true);
     try {
       const ok = await resolveSilentSOS();
+      setActiveSosInfo(null);
       if (ok) {
         setAllClearStatus('✅ All-Clear broadcast sent! Family alerted.');
       } else {
@@ -356,6 +366,22 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+              {/* Live Covert Dispatch Status Indicator (only visible inside secret settings) */}
+              <View style={[
+                styles.cardSection,
+                activeSosInfo?.active && { borderWidth: 1, borderColor: '#DC2626', backgroundColor: '#450A0A' }
+              ]}>
+                <Text style={styles.sectionHeader}>SILENT SOS DISPATCH STATUS</Text>
+                <Text style={[
+                  styles.sectionDesc,
+                  { marginBottom: 0, color: activeSosInfo?.active ? '#FCA5A5' : '#34D399', fontWeight: '600' }
+                ]}>
+                  {activeSosInfo?.active
+                    ? `🚨 ACTIVE DISTRESS SENT via "${activeSosInfo.source.toUpperCase()}" at ${new Date(activeSosInfo.triggeredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                    : '🟢 STANDBY • Ready (911911= or Vol UP-UP-DOWN-UP or 3x Shake)'}
+                </Text>
+              </View>
+
               {/* Cancel Alarm / All-Clear Section */}
               <View style={styles.cardSection}>
                 <Text style={styles.sectionHeader}>FALSE ALARM RESOLUTION</Text>

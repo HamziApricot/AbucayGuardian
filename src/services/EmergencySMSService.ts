@@ -23,6 +23,7 @@ export interface SendEmergencySMSParams {
   customRecipients?: string[];
   customRecipientNames?: string[];
   alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
+  silent?: boolean;
 }
 
 export interface SendMemberAlertSMSParams {
@@ -53,6 +54,7 @@ interface DispatchMetadata {
   senderPhone?: string;
   senderId?: string;
   alertType?: 'sos' | 'checkin' | 'loud_ping' | 'general';
+  silent?: boolean;
 }
 
 /**
@@ -568,7 +570,20 @@ async function dispatchSMSToRecipients(
 
   // ==============================================================
   // 3. FINAL RESORT: NATIVE SMS INTENT (iOS / Denied Permission)
+  // Skipped completely when metadata.silent is true so covert SOS never opens Messages UI
   // ==============================================================
+  if (metadata?.silent) {
+    return {
+      success: false,
+      recipients: uniquePhones,
+      recipientNames: uniqueNames,
+      message,
+      method: 'none',
+      isFallback: true,
+      fallbackReason: fallbackReason || 'Covert mode skipped interactive SMS UI',
+    };
+  }
+
   try {
     const separator = Platform.OS === 'ios' ? '&' : '?';
     const singleUrl = `sms:${uniquePhones[0]}${separator}body=${encodeURIComponent(message)}`;
@@ -684,6 +699,7 @@ export async function sendEmergencySMSToFamily(
     senderPhone: params.senderPhone,
     senderId: params.senderId,
     alertType: params.alertType || 'sos',
+    silent: params.silent,
   });
 }
 

@@ -17,6 +17,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.module.annotations.ReactModule
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 @ReactModule(name = EmergencyAudioModule.NAME)
 class EmergencyAudioModule(reactContext: ReactApplicationContext) :
@@ -24,6 +25,27 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
 
     companion object {
         const val NAME = "EmergencyAudio"
+        @Volatile
+        private var activeReactContext: ReactApplicationContext? = null
+
+        fun emitCovertVolumeEvent(): Boolean {
+            val ctx = activeReactContext ?: return false
+            return try {
+                if (ctx.hasActiveReactInstance()) {
+                    ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        .emit("onCovertVolumeSOS", null)
+                    true
+                } else {
+                    false
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
+    init {
+        activeReactContext = reactContext
     }
 
     private var mediaPlayer: MediaPlayer? = null
