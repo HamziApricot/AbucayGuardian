@@ -24,10 +24,12 @@ import {
 } from './src/services/EmergencyNotificationService';
 import { startBackgroundLocationTracking, stopBackgroundLocationTracking } from './src/services/BackgroundLocationTask';
 import { LocationTrackingService } from './src/services/LocationTrackingService';
-import { getDeviceBatteryLevel } from './src/services/batteryService';
+import { getDeviceBatteryLevel, getDevicePowerState, subscribeToBatteryHealth } from './src/services/batteryService';
 import { navigationRef, navigateToNotificationTarget } from './src/services/NavigationService';
 import { supabase } from './src/lib/supabase';
 import './src/services/BackgroundLocationTask';
+import { useCovertShake } from './src/hooks/useCovertShake';
+import { useCovertVolume } from './src/hooks/useCovertVolume';
 
 function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -71,6 +73,10 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     const { user } = useAuth();
     const { showToast } = useAlert();
     const [activeNDRRMCAlert, setActiveNDRRMCAlert] = useState<NDRRMCEmergencyAlertData | null>(null);
+
+    // Active Covert SOS Listeners: Hardware volume pattern & shake gesture
+    useCovertShake();
+    useCovertVolume();
 
     useEffect(() => {
         initEmergencyNotifications();
@@ -319,25 +325,40 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             },
         });
 
-        // Global Online Presence: Marks member as Active while the app is open
-        const syncAppPresence = async () => {
+        // Global Online Presence: Marks member as Active & syncs battery + location in real time
+        let lastBroadcastCoords: { lat: number; lng: number; accuracy: number; speed: number } | null = null;
+        const syncAppPresence = async (overridePower?: { level: number; isCharging: boolean; lowPowerMode: boolean }) => {
             try {
                 const nowIso = new Date().toISOString();
-                const rawBattery = await getDeviceBatteryLevel().catch(() => null);
+                const powerInfo = overridePower ?? (await getDevicePowerState().catch(() => null));
+                const rawBattery = powerInfo?.level ?? (await getDeviceBatteryLevel().catch(() => null));
                 const battery = rawBattery != null && rawBattery >= 0 ? (rawBattery > 1 ? rawBattery / 100 : rawBattery) : null;
+                const isCharging = powerInfo?.isCharging ?? false;
+                const lowPowerMode = powerInfo?.lowPowerMode ?? false;
 
                 // If location permission is already granted, keep tracker updated
                 const { status } = await Location.getForegroundPermissionsAsync();
                 if (status === 'granted') {
-                    const loc = await Location.getCurrentPositionAsync({
-                        accuracy: Location.Accuracy.Balanced,
-                    });
+                    let locCoords = lastBroadcastCoords;
+                    if (!overridePower || !locCoords) {
+                        const loc = await Location.getCurrentPositionAsync({
+                            accuracy: Location.Accuracy.Balanced,
+                        });
+                        locCoords = {
+                            lat: loc.coords.latitude,
+                            lng: loc.coords.longitude,
+                            accuracy: Math.round(loc.coords.accuracy ?? 5),
+                            speed: Math.max(0, loc.coords.speed ?? 0),
+                        };
+                        lastBroadcastCoords = locCoords;
+                    }
+
                     const basePayload: any = {
                         user_id: user.id,
-                        lat: loc.coords.latitude,
-                        lng: loc.coords.longitude,
-                        accuracy: Math.round(loc.coords.accuracy ?? 5),
-                        speed: Math.max(0, loc.coords.speed ?? 0),
+                        lat: locCoords.lat,
+                        lng: locCoords.lng,
+                        accuracy: locCoords.accuracy,
+                        speed: locCoords.speed,
                         updated_at: nowIso,
                     };
                     if (battery != null) {
@@ -348,29 +369,31 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                     if (res.error) {
                         await supabase.from('tracker').upsert({
                             user_id: user.id,
-                            lat: loc.coords.latitude,
-                            lng: loc.coords.longitude,
+                            lat: locCoords.lat,
+                            lng: locCoords.lng,
                             updated_at: nowIso,
                         }, { onConflict: 'user_id' });
                     }
 
                     await supabase.from('users').update({
                         updated_at: nowIso,
-                        lat: loc.coords.latitude,
-                        lng: loc.coords.longitude,
+                        lat: locCoords.lat,
+                        lng: locCoords.lng,
                     }).eq('id', user.id);
 
-                    // Broadcast live presence + battery + location to family circle
+                    // Broadcast live presence + battery health + location to family circle
                     supabase.channel('family-broadcast').send({
                         type: 'broadcast',
                         event: 'location_update',
                         payload: {
                             user_id: user.id,
-                            lat: loc.coords.latitude,
-                            lng: loc.coords.longitude,
-                            accuracy: Math.round(loc.coords.accuracy ?? 5),
-                            speed: Math.max(0, loc.coords.speed ?? 0),
+                            lat: locCoords.lat,
+                            lng: locCoords.lng,
+                            accuracy: locCoords.accuracy,
+                            speed: locCoords.speed,
                             battery,
+                            is_charging: isCharging,
+                            low_power_mode: lowPowerMode,
                             updated_at: nowIso,
                         },
                     }).catch(() => {});
@@ -383,11 +406,15 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
         };
 
         syncAppPresence();
-        const presenceTimer = setInterval(syncAppPresence, 25000);
+        const presenceTimer = setInterval(() => syncAppPresence(), 10000);
+        const unsubBattery = subscribeToBatteryHealth((info) => {
+            syncAppPresence(info);
+        });
 
         return () => {
             unsubscribe();
             clearInterval(presenceTimer);
+            if (unsubBattery) unsubBattery();
         };
     }, [user?.id]);
 

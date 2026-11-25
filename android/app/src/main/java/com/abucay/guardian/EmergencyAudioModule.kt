@@ -73,14 +73,14 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
             if (audioManager != null) {
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                        val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                             .setAudioAttributes(audioAttributes)
                             .build()
                         audioFocusRequest = focusReq
                         audioManager.requestAudioFocus(focusReq)
                     } else {
                         @Suppress("DEPRECATION")
-                        audioManager.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                        audioManager.requestAudioFocus(null, AudioManager.STREAM_ALARM, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                     }
                 } catch (_: Exception) {}
             }
@@ -126,6 +126,17 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
     fun stopAlarmSound(promise: Promise? = null) {
         try {
             stopAlarmInternal()
+            promise?.resolve(true)
+        } catch (e: Exception) {
+            promise?.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun setAlarmVolume(volume: Double, promise: Promise? = null) {
+        try {
+            val vol = volume.toFloat().coerceIn(0.0f, 1.0f)
+            mediaPlayer?.setVolume(vol, vol)
             promise?.resolve(true)
         } catch (e: Exception) {
             promise?.resolve(false)

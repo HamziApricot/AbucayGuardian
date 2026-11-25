@@ -1,11 +1,21 @@
-import React, { useRef, useState, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useRef, useState, useEffect, useImperativeHandle, forwardRef, useMemo } from 'react';
 import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Platform, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, Circle } from './Map';
+import MapView, { Marker, Polyline, Circle, UrlTile } from './Map';
 import { getTrackingStatus } from '../utils/tracking';
-import { fetchAndCacheSafetyPOIs } from '../services/SafetyPOIService';
+import { fetchAndCacheSafetyPOIs, INITIAL_SAFETY_GEOJSON } from '../services/SafetyPOIService';
 import { Colors } from '../constants/theme';
 import type { FamilyMember3D, FamilyMap3DHandle, FamilyMap3DProps } from './FamilyMap3D';
+import { WindParticleOverlay } from './WindParticleOverlay';
+import { WeatherHUD, type WeatherDisplayMode } from './WeatherHUD';
+import {
+  fetchRainViewerFrames,
+  fetchPointForecast,
+  getRainViewerTileUrl,
+  getCurrentHourIndex,
+  type RainViewerData,
+  type PointForecast,
+} from '../services/WeatherService';
 
 const POI_CONFIG: Record<string, { color: string; icon: keyof typeof Ionicons.glyphMap; label: string }> = {
   evacuation: { color: '#16A34A', icon: 'shield-checkmark', label: 'Evacuation Shelter' },
@@ -252,14 +262,49 @@ const AnimatedFamilyMarker: React.FC<{
     }
   }, [isSelected, isSOS]);
 
-  // When GPS coordinates, speed, battery, or SOS status update, unfreeze tracksViewChanges
+  // Live battery health calculations
+  const batteryPct =
+    member.batteryLevel != null && member.batteryLevel >= 0
+      ? Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)
+      : null;
+  const isCharging = Boolean(member.isCharging);
+  const batteryColor = isCharging
+    ? '#059669'
+    : batteryPct != null && batteryPct <= 20
+    ? '#DC2626'
+    : batteryPct != null && batteryPct <= 50
+    ? '#D97706'
+    : '#16A34A';
+  const batteryHealthStr = isCharging
+    ? 'Charging'
+    : batteryPct != null && batteryPct <= 15
+    ? 'Critical'
+    : batteryPct != null && batteryPct <= 25
+    ? 'Low'
+    : batteryPct != null && batteryPct <= 50
+    ? 'Fair'
+    : 'Good';
+
+  // When GPS coordinates, speed, battery, charging, heading, or SOS status update, unfreeze tracksViewChanges
   useEffect(() => {
     setTracksViewChanges(true);
     const timer = setTimeout(() => {
       setTracksViewChanges(false);
-    }, 400);
+    }, 450);
     return () => clearTimeout(timer);
-  }, [member.latitude, member.longitude, member.avatarUrl, member.speed, member.batteryLevel, member.isSOS]);
+  }, [
+    member.latitude,
+    member.longitude,
+    member.avatarUrl,
+    member.speed,
+    member.batteryLevel,
+    member.isCharging,
+    member.lowPowerMode,
+    member.heading,
+    member.accuracy,
+    status.isActive,
+    member.isSOS,
+  ]);
 
   return (
     <Marker
@@ -316,12 +361,12 @@ const AnimatedFamilyMarker: React.FC<{
             </View>
             <Text style={[styles.metaText, isSOS && styles.metaTextDanger]}>
               {isSOS
-                ? `🚨 SOS DISTRESS ACTIVE • ±${Math.round(member.accuracy || 5)}m${member.batteryLevel != null && member.batteryLevel > 0 ? ` • 🔋 ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''}`
+                ? `🚨 SOS DISTRESS ACTIVE • ±${Math.round(member.accuracy || 5)}m${batteryPct !== null ? ` • ${isCharging ? '⚡' : '🔋'} ${batteryPct}% (${batteryHealthStr})` : ''}`
                 : isSelf
-                ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
+                ? `${member.speed > 1 ? `${Math.round(member.speed * 3.6)} km/h • ` : ''}Live GPS${batteryPct !== null ? ` • ${isCharging ? '⚡' : '🔋'} ${batteryPct}% ${batteryHealthStr}` : ''} • ±${Math.round(member.accuracy || 5)}m`
                 : status.isActive
-                  ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${member.batteryLevel != null && member.batteryLevel > 0 ? ` • ${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%` : ''} • ±${Math.round(member.accuracy || 5)}m`
-                  : `Offline • ${status.fromAgo}`}
+                  ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${batteryPct !== null ? ` • ${isCharging ? '⚡' : '🔋'} ${batteryPct}% ${batteryHealthStr}` : ''} • ±${Math.round(member.accuracy || 5)}m`
+                  : `Offline • ${status.fromAgo}${batteryPct !== null ? ` • ${batteryPct}%` : ''}`}
             </Text>
           </Animated.View>
         )}
@@ -385,23 +430,66 @@ const AnimatedFamilyMarker: React.FC<{
             </View>
           )}
         </Animated.View>
+
+        {/* Always-Visible Live Battery Health Badge on Map Pin */}
+        {batteryPct !== null && (
+          <View style={[styles.mapBatteryPill, { backgroundColor: batteryColor }]}>
+            <Ionicons
+              name={isCharging ? 'flash' : batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
+              size={9}
+              color="#FFFFFF"
+            />
+            <Text style={styles.mapBatteryPillText}>{batteryPct}%</Text>
+          </View>
+        )}
       </Animated.View>
     </Marker>
   );
 };
 
 export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
-  ({ members, selectedMemberId: propSelectedId, onSelectMember, onCancelFocus, showMemberStrip = false, onMapInteraction, showSafetyPOIs = true, navigationRoute }, ref) => {
+  (
+    {
+      members,
+      selectedMemberId: propSelectedId,
+      onSelectMember,
+      onCancelFocus,
+      showMemberStrip = false,
+      onMapInteraction,
+      showSafetyPOIs = true,
+      navigationRoute,
+      initialWeatherVisible = false,
+      isWeatherVisible: controlledWeatherVisible,
+      onToggleWeather: controlledOnToggleWeather,
+      weatherMode: controlledWeatherMode,
+      activeTileUrl: controlledActiveTileUrl,
+      windSpeedMs: controlledWindSpeedMs,
+      windDirectionDeg: controlledWindDirectionDeg,
+      weatherBottomOffset,
+    },
+    ref
+  ) => {
     const mapRef = useRef<any>(null);
     const isMarkerTappedRef = useRef(false);
     const [mapType, setMapType] = useState<'standard' | 'satellite' | 'hybrid'>('standard');
     const [internalSelectedId, setInternalSelectedId] = useState<string | null>(
       members[0]?.id ?? null
     );
-    const [safetyGeoJSON, setSafetyGeoJSON] = useState<GeoJSON.FeatureCollection>({
-      type: 'FeatureCollection',
-      features: [],
-    });
+    const [safetyGeoJSON, setSafetyGeoJSON] = useState<GeoJSON.FeatureCollection>(INITIAL_SAFETY_GEOJSON);
+
+    // Weather state (controlled from parent screen or internal fallback)
+    const isControlled = controlledWeatherVisible !== undefined;
+    const [internalWeatherVisible, setInternalWeatherVisible] = useState<boolean>(initialWeatherVisible);
+    const [internalWeatherMode, setInternalWeatherMode] = useState<WeatherDisplayMode>('both');
+    const [radarData, setRadarData] = useState<RainViewerData | null>(null);
+    const [activeFrameIndex, setActiveFrameIndex] = useState<number>(0);
+    const [pointForecast, setPointForecast] = useState<PointForecast | null>(null);
+    const [selectedHourIndex, setSelectedHourIndex] = useState<number>(0);
+    const [isLoadingWeather, setIsLoadingWeather] = useState<boolean>(false);
+    const [isCameraMoving, setIsCameraMoving] = useState<boolean>(false);
+
+    const isWeatherVisible = isControlled ? Boolean(controlledWeatherVisible) : internalWeatherVisible;
+    const weatherMode = controlledWeatherMode ?? internalWeatherMode;
 
     const activeSelectedId = propSelectedId !== undefined ? propSelectedId : internalSelectedId;
 
@@ -467,6 +555,59 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
         .then(setSafetyGeoJSON)
         .catch((err) => console.warn('[SafetyPOIService] Load error:', err));
     }, [centerLat, centerLng, showSafetyPOIs]);
+
+    // Load weather data on demand or when center changes (only when not controlled from parent)
+    useEffect(() => {
+      if (isControlled || !isWeatherVisible) return;
+      let isMounted = true;
+      setIsLoadingWeather(true);
+
+      Promise.all([
+        fetchRainViewerFrames(),
+        fetchPointForecast(centerLat, centerLng),
+      ])
+        .then(([rvData, fcData]) => {
+          if (!isMounted) return;
+          setRadarData(rvData);
+          if (rvData.frames.length > 0) {
+            setActiveFrameIndex(rvData.frames.length - 1);
+          }
+          if (fcData) {
+            setPointForecast(fcData);
+            setSelectedHourIndex(getCurrentHourIndex(fcData.hourly));
+          }
+          setIsLoadingWeather(false);
+        })
+        .catch((err) => {
+          console.warn('[FamilyMapExpo] Weather load error:', err);
+          if (isMounted) setIsLoadingWeather(false);
+        });
+
+      return () => {
+        isMounted = false;
+      };
+    }, [isControlled, isWeatherVisible, centerLat, centerLng]);
+
+    const activeTileUrl = useMemo(() => {
+      if (controlledActiveTileUrl !== undefined) return controlledActiveTileUrl;
+      if (!radarData || !radarData.frames || radarData.frames.length === 0) return null;
+      const frame = radarData.frames[activeFrameIndex] || radarData.frames[radarData.frames.length - 1];
+      if (!frame) return null;
+      return getRainViewerTileUrl(radarData.host, frame.path, 512, 2, 1, 1);
+    }, [controlledActiveTileUrl, radarData, activeFrameIndex]);
+
+    const currentWindSpeedMs = useMemo(() => {
+      if (controlledWindSpeedMs !== undefined) return controlledWindSpeedMs;
+      if (!pointForecast?.hourly?.wind_speed_10m) return 3.5;
+      const speedKmh = pointForecast.hourly.wind_speed_10m[selectedHourIndex] ?? 12;
+      return speedKmh / 3.6;
+    }, [controlledWindSpeedMs, pointForecast, selectedHourIndex]);
+
+    const currentWindDirectionDeg = useMemo(() => {
+      if (controlledWindDirectionDeg !== undefined) return controlledWindDirectionDeg;
+      if (!pointForecast?.hourly?.wind_direction_10m) return 45;
+      return pointForecast.hourly.wind_direction_10m[selectedHourIndex] ?? 45;
+    }, [controlledWindDirectionDeg, pointForecast, selectedHourIndex]);
 
     const handleFocusOnMember = (member: FamilyMember3D) => {
       isMarkerTappedRef.current = true;
@@ -580,9 +721,21 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
           }}
           onPanDrag={() => onMapInteraction?.()}
           onPress={handleMapPress}
+          onRegionChange={() => setIsCameraMoving(true)}
+          onRegionChangeComplete={() => setIsCameraMoving(false)}
           showsCompass={false}
           showsMyLocationButton={false}
         >
+          {/* RainViewer Live Precipitation Radar Overlay (Below annotations & markers) */}
+          {isWeatherVisible && (weatherMode === 'both' || weatherMode === 'radar') && activeTileUrl && (
+            <UrlTile
+              urlTemplate={activeTileUrl}
+              zIndex={1}
+              opacity={0.68}
+              maximumZ={7}
+            />
+          )}
+
           {/* Active Turn-by-Turn Navigation Route (Real Road Curves / Offline Vector) */}
           {navigationRoute && (
             <>
@@ -674,9 +827,18 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
                     setTimeout(() => {
                       isMarkerTappedRef.current = false;
                     }, 350);
+
+                    const props = feature.properties || {};
+                    const typeLabel = props.type || conf.label;
+                    const details = [
+                      `Type: ${typeLabel}`,
+                      props.address ? `Location: ${props.address}` : null,
+                      props.phone ? `Emergency Contact: ${props.phone}` : null,
+                    ].filter(Boolean).join('\n');
+
                     Alert.alert(
-                      name || conf.label,
-                      `Category: ${conf.label}${phone ? `\nEmergency Contact: ${phone}` : ''}`
+                      props.name || conf.label,
+                      details
                     );
                   }}
                 >
@@ -779,6 +941,17 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
           })}
         </MapView>
 
+        {/* Animated Wind Particle Streamlines Overlay (Windy Signature Look) */}
+        {isWeatherVisible && (weatherMode === 'both' || weatherMode === 'wind') && (
+          <WindParticleOverlay
+            windSpeedMs={currentWindSpeedMs}
+            windDirectionDeg={currentWindDirectionDeg}
+            isActive={isWeatherVisible}
+            isPaused={isCameraMoving}
+            mapBearing={0}
+          />
+        )}
+
         {/* Floating Controls */}
         <View style={styles.controlsPanel}>
           <TouchableOpacity
@@ -796,7 +969,44 @@ export const FamilyMapExpo = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>(
           >
             <Ionicons name="layers" size={20} color="#FFFFFF" />
           </TouchableOpacity>
+
+          {/* Live Weather / Radar & Wind Particles Toggle */}
+          <TouchableOpacity
+            style={[styles.controlButton, isWeatherVisible && styles.controlButtonActive]}
+            onPress={() => {
+              onMapInteraction?.();
+              if (controlledOnToggleWeather) {
+                controlledOnToggleWeather();
+              } else {
+                setInternalWeatherVisible((prev) => !prev);
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={isWeatherVisible ? 'rainy' : 'cloud-outline'}
+              size={20}
+              color={isWeatherVisible ? '#38BDF8' : '#FFFFFF'}
+            />
+          </TouchableOpacity>
         </View>
+
+        {/* Live Weather Radar HUD (Only rendered internally when NOT controlled by parent screen) */}
+        {!isControlled && isWeatherVisible && (
+          <WeatherHUD
+            forecast={pointForecast}
+            radarFrames={radarData?.frames ?? []}
+            activeFrameIndex={activeFrameIndex}
+            onSelectFrameIndex={setActiveFrameIndex}
+            selectedHourIndex={selectedHourIndex}
+            onSelectHourIndex={setSelectedHourIndex}
+            displayMode={weatherMode}
+            onChangeDisplayMode={setInternalWeatherMode}
+            onClose={() => setInternalWeatherVisible(false)}
+            isLoading={isLoadingWeather}
+            bottomOffset={weatherBottomOffset}
+          />
+        )}
 
         {/* Optional Member Strip */}
         {showMemberStrip && (
@@ -993,6 +1203,28 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#FFFFFF',
   },
+  mapBatteryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 8,
+    marginTop: -6,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.25,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  mapBatteryPillText: {
+    color: '#FFFFFF',
+    fontSize: 8.5,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
   pointerTip: {
     width: 0,
     height: 0,
@@ -1035,6 +1267,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3,
     elevation: 4,
+  },
+  controlButtonActive: {
+    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+    borderWidth: 1.5,
+    borderColor: '#38BDF8',
   },
   familyStrip: {
     position: 'absolute',

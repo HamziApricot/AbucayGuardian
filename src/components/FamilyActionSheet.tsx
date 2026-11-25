@@ -283,29 +283,37 @@ export const FamilyActionSheet: React.FC<FamilyActionSheetProps> = ({
             </View>
 
             <View style={styles.telemetryGrid}>
-              {/* Battery Percentage */}
+              {/* Battery Health & Charging Status */}
               <View style={styles.telemetryItem}>
                 <Ionicons
                   name={
+                    member.isCharging ? 'flash' :
                     member.batteryLevel == null ? 'battery-charging-outline' :
                     member.batteryLevel <= 0.2 ? 'battery-dead' :
                     member.batteryLevel <= 0.5 ? 'battery-half' : 'battery-full'
                   }
                   size={18}
                   color={
+                    member.isCharging ? '#059669' :
                     member.batteryLevel == null ? Colors.textMuted :
                     member.batteryLevel <= 0.2 ? '#EF4444' :
                     member.batteryLevel <= 0.5 ? '#D97706' : '#10B981'
                   }
                 />
                 <View style={styles.telemetryTextCol}>
-                  <Text style={styles.telemetryLabel}>Battery</Text>
+                  <Text style={styles.telemetryLabel}>Battery Health</Text>
                   <Text style={[
                     styles.telemetryValue,
-                    member.batteryLevel != null && member.batteryLevel <= 0.2 && { color: '#EF4444' }
+                    member.isCharging && { color: '#059669' },
+                    !member.isCharging && member.batteryLevel != null && member.batteryLevel <= 0.2 && { color: '#EF4444' }
                   ]}>
                     {member.batteryLevel != null && member.batteryLevel >= 0
-                      ? `${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}%`
+                      ? `${Math.round(member.batteryLevel > 1 ? member.batteryLevel : member.batteryLevel * 100)}% • ${
+                          member.isCharging ? 'Charging' :
+                          member.batteryLevel <= 0.15 ? 'Critical' :
+                          member.batteryLevel <= 0.25 ? 'Low' :
+                          member.batteryLevel <= 0.5 ? 'Fair' : 'Good'
+                        }`
                       : 'Unknown'}
                   </Text>
                 </View>

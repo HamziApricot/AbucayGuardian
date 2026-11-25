@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Modal,
   View,
@@ -16,8 +16,13 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   playEmergencyAlarmAudio,
   stopEmergencyAlarmAudio,
+  setEmergencyAlarmVolume,
 } from '../services/EmergencyAudioService';
 import { dismissEmergencyAlertNotifications } from '../services/EmergencyNotificationService';
+import {
+  speakEmergencyAlert,
+  stopEmergencySpeech,
+} from '../services/EmergencySpeechService';
 
 export interface NDRRMCEmergencyAlertData {
   alertType: 'loud_ping' | 'checkin' | 'sos';
@@ -51,18 +56,63 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   // Pulsing siren beacon animation
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0.4)).current;
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const speechTimeoutRef = useRef<any>(null);
+
+  const triggerTTS = useCallback((data: NDRRMCEmergencyAlertData) => {
+    // Duck siren alarm volume during speech announcement so speech is 100% intelligible
+    setEmergencyAlarmVolume(0.2).catch(() => {});
+
+    speakEmergencyAlert(
+      data.alertType,
+      data.fromName,
+      {
+        battery: data.battery,
+      },
+      {
+        onStart: () => {
+          setIsSpeaking(true);
+          setEmergencyAlarmVolume(0.2).catch(() => {});
+        },
+        onDone: () => {
+          setIsSpeaking(false);
+          setEmergencyAlarmVolume(0.7).catch(() => {});
+        },
+        onStopped: () => {
+          setIsSpeaking(false);
+          setEmergencyAlarmVolume(0.7).catch(() => {});
+        },
+        onError: () => {
+          setIsSpeaking(false);
+          setEmergencyAlarmVolume(0.85).catch(() => {});
+        },
+      }
+    ).catch(() => {
+      setIsSpeaking(false);
+    });
+  }, []);
+
+  const toggleSpeech = useCallback(() => {
+    if (isSpeaking) {
+      stopEmergencySpeech().catch(() => {});
+      setIsSpeaking(false);
+      setEmergencyAlarmVolume(0.7).catch(() => {});
+    } else if (alertData) {
+      triggerTTS(alertData);
+    }
+  }, [isSpeaking, alertData, triggerTTS]);
 
   useEffect(() => {
-    if (visible) {
+    if (visible && alertData) {
       // 1. Play hardware alarm audio (STREAM_ALARM - overrides Silent/Vibrate/DND)
-      const isLoud = alertData?.alertType === 'loud_ping' || alertData?.alertType === 'sos';
+      const isLoud = alertData.alertType === 'loud_ping' || alertData.alertType === 'sos';
       playEmergencyAlarmAudio(isLoud ? 'alert' : 'notif', isLoud).catch(() => {});
 
       // 2. Continuous emergency siren vibration (alternating NDRRMC cadence)
       // Pattern: wait 0ms, vibrate 600ms, wait 200ms, vibrate 600ms, wait 200ms, vibrate 1000ms
       Vibration.vibrate([0, 600, 200, 600, 200, 1000, 300, 1000], true);
 
-      // 2. Loop pulsing siren beacon
+      // 3. Loop pulsing siren beacon
       const pulseLoop = Animated.loop(
         Animated.sequence([
           Animated.parallel([
@@ -93,18 +143,28 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
       );
       pulseLoop.start();
 
+      // 4. Voice reader: brief 800ms alert chime burst to grab attention, then read dialogue out loud
+      if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+      speechTimeoutRef.current = setTimeout(() => {
+        triggerTTS(alertData);
+      }, 800);
+
       return () => {
+        if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+        stopEmergencySpeech().catch(() => {});
         stopEmergencyAlarmAudio().catch(() => {});
         Vibration.cancel();
         pulseLoop.stop();
         dismissEmergencyAlertNotifications().catch(() => {});
       };
     } else {
+      if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+      stopEmergencySpeech().catch(() => {});
       stopEmergencyAlarmAudio().catch(() => {});
       Vibration.cancel();
       dismissEmergencyAlertNotifications().catch(() => {});
     }
-  }, [visible, alertData]);
+  }, [visible, alertData, triggerTTS]);
 
   if (!visible || !alertData) return null;
 
@@ -133,6 +193,8 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   const sirenIcon = isSOS ? 'warning' : isLoudPing ? 'volume-high' : 'alert-circle';
 
   const handleSafe = () => {
+    if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+    stopEmergencySpeech().catch(() => {});
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     dismissEmergencyAlertNotifications().catch(() => {});
@@ -140,6 +202,8 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   };
 
   const handleSOS = () => {
+    if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+    stopEmergencySpeech().catch(() => {});
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     dismissEmergencyAlertNotifications().catch(() => {});
@@ -147,6 +211,8 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   };
 
   const handleViewTracker = () => {
+    if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+    stopEmergencySpeech().catch(() => {});
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     dismissEmergencyAlertNotifications().catch(() => {});
@@ -158,6 +224,8 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
   };
 
   const handleDismiss = () => {
+    if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+    stopEmergencySpeech().catch(() => {});
     stopEmergencyAlarmAudio().catch(() => {});
     Vibration.cancel();
     dismissEmergencyAlertNotifications().catch(() => {});
@@ -180,9 +248,29 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
               <View style={[styles.hazardTag, isSOS && styles.hazardTagSOS]}>
                 <Text style={styles.hazardTagText}>{hazardTag}</Text>
               </View>
-              <Text style={styles.hazardTime}>
-                {alertData.timestamp || 'CRITICAL PRIORITY'}
-              </Text>
+
+              <View style={styles.hazardRightActions}>
+                {/* Text to Speech Voice Toggle Button */}
+                <TouchableOpacity
+                  style={[styles.ttsSpeakerBtn, isSpeaking && styles.ttsSpeakerBtnActive]}
+                  onPress={toggleSpeech}
+                  activeOpacity={0.75}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons
+                    name={isSpeaking ? 'volume-high' : 'volume-mute'}
+                    size={14}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.ttsSpeakerBtnText}>
+                    {isSpeaking ? 'VOICE ON' : 'READ ALOUD'}
+                  </Text>
+                </TouchableOpacity>
+
+                <Text style={styles.hazardTime}>
+                  {alertData.timestamp || 'CRITICAL'}
+                </Text>
+              </View>
             </View>
             <Text style={styles.hazardMainTitle}>{hazardTitle}</Text>
             <Text style={styles.hazardSubTitle}>{hazardSub}</Text>
@@ -261,13 +349,21 @@ export const NDRRMCEmergencyModal: React.FC<NDRRMCEmergencyModalProps> = ({
                 color={isSOS ? '#EF4444' : '#F59E0B'}
                 style={styles.noticeIcon}
               />
-              <Text style={[styles.warningNoticeText, isSOS && styles.warningNoticeTextSOS]}>
-                {isSOS
-                  ? `🚨 ${alertData.fromName} broadcasted an EMERGENCY SOS DISTRESS ALERT! Live coordinates and battery status have been reported. Check on them immediately or call emergency dispatch.`
-                  : isLoudPing
-                  ? `${alertData.fromName} triggered an urgent alarm on your device. Please verify you are safe immediately.`
-                  : `${alertData.fromName} is requesting your real-time safety status. Tap below to confirm you are safe.`}
-              </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.warningNoticeText, isSOS && styles.warningNoticeTextSOS]}>
+                  {isSOS
+                    ? `🚨 ${alertData.fromName} broadcasted an EMERGENCY SOS DISTRESS ALERT! Live coordinates and battery status have been reported. Check on them immediately or call emergency dispatch.`
+                    : isLoudPing
+                    ? `${alertData.fromName} triggered an urgent alarm on your device. Please verify you are safe immediately.`
+                    : `${alertData.fromName} is requesting your real-time safety status. Tap below to confirm you are safe.`}
+                </Text>
+                {isSpeaking && (
+                  <View style={styles.voiceSpeakingIndicator}>
+                    <Ionicons name="volume-high" size={13} color="#10B981" />
+                    <Text style={styles.voiceSpeakingText}>Voice reading dialogue out loud...</Text>
+                  </View>
+                )}
+              </View>
             </View>
 
             {/* Action Buttons */}
@@ -475,6 +571,44 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
+  },
+  hazardRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  ttsSpeakerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  ttsSpeakerBtnActive: {
+    backgroundColor: '#059669',
+    borderColor: '#34D399',
+  },
+  ttsSpeakerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  voiceSpeakingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 4,
+  },
+  voiceSpeakingText: {
+    color: '#34D399',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   hazardTag: {
     backgroundColor: '#000000',

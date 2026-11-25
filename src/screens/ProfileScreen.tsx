@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity, ScrollView,
-    TextInput, ActivityIndicator, Modal, Image
+    TextInput, ActivityIndicator, Modal, Image, Switch
 } from 'react-native';
 import { useAlert } from '../context/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +20,13 @@ import {
     setTextBeeConfig,
     testTextBeeConnection
 } from '../services/EmergencySMSService';
+import { DisguisedCalculatorModal } from '../components/DisguisedCalculator';
+import {
+    getEmergencySpeechSettings,
+    saveEmergencySpeechSettings,
+    speakDialogueText,
+    stopEmergencySpeech,
+} from '../services/EmergencySpeechService';
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
@@ -27,6 +34,8 @@ export default function ProfileScreen() {
     const { showAlert, showToast } = useAlert();
     const [editing, setEditing] = useState(false);
     const [showPermissionsModal, setShowPermissionsModal] = useState(false);
+    const [showCovertModal, setShowCovertModal] = useState(false);
+    const [speechEnabled, setSpeechEnabled] = useState(true);
     const [name, setName] = useState(userProfile?.name ?? '');
     const [countryCode, setCountryCode] = useState('+63');
     const [phone, setPhone] = useState(userProfile?.phone ?? '');
@@ -48,6 +57,9 @@ export default function ProfileScreen() {
             setTbDeviceId(cfg.deviceId);
             setTbWebhookUrl(cfg.webhookUrl);
             setHasTbConfigured(Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0));
+        });
+        getEmergencySpeechSettings().then((s) => {
+            setSpeechEnabled(s.enabled);
         });
     }, []);
 
@@ -456,6 +468,61 @@ export default function ProfileScreen() {
                         </View>
                         <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
                     </TouchableOpacity>
+
+                    <View style={{ height: 12 }} />
+
+                    {/* Disguised Tools & Covert SOS Trigger */}
+                    <TouchableOpacity
+                        style={styles.permissionActionRow}
+                        onPress={() => setShowCovertModal(true)}
+                        activeOpacity={0.7}
+                    >
+                        <View style={styles.permissionLeft}>
+                            <View style={[styles.infoIcon, { backgroundColor: '#10B98115' }]}>
+                                <Ionicons name="calculator-outline" size={18} color="#10B981" />
+                            </View>
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                                <Text style={styles.infoLabel}>Disguised Tools & Covert SOS</Text>
+                                <Text style={styles.permissionSub}>
+                                    Stealth calculator trigger, shake & volume shortcuts
+                                </Text>
+                            </View>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                    </TouchableOpacity>
+
+                    <View style={{ height: 12 }} />
+
+                    {/* Emergency Voice Reader (TTS) */}
+                    <View style={styles.permissionActionRow}>
+                        <View style={styles.permissionLeft}>
+                            <View style={[styles.infoIcon, { backgroundColor: '#8B5CF615' }]}>
+                                <Ionicons name="volume-high-outline" size={18} color="#8B5CF6" />
+                            </View>
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                                <Text style={styles.infoLabel}>Emergency Voice Reader (TTS)</Text>
+                                <Text style={styles.permissionSub}>
+                                    {speechEnabled
+                                        ? 'Active • Reads SOS, Loud Ping & Check-In dialogues'
+                                        : 'Muted • Dialogue voice reading is off'}
+                                </Text>
+                            </View>
+                        </View>
+                        <Switch
+                            value={speechEnabled}
+                            onValueChange={async (val) => {
+                                setSpeechEnabled(val);
+                                await saveEmergencySpeechSettings({ enabled: val });
+                                if (val) {
+                                    speakDialogueText('Emergency voice reader is active. Emergency dialogues will be read out loud.');
+                                } else {
+                                    stopEmergencySpeech().catch(() => {});
+                                }
+                            }}
+                            trackColor={{ false: '#CBD5E1', true: '#8B5CF6' }}
+                            thumbColor="#FFFFFF"
+                        />
+                    </View>
                 </View>
             </View>
 
@@ -627,6 +694,12 @@ export default function ProfileScreen() {
                     </View>
                 </View>
             </Modal>
+
+            {/* Disguised Emergency Tools / Covert Calculator Modal */}
+            <DisguisedCalculatorModal
+                visible={showCovertModal}
+                onClose={() => setShowCovertModal(false)}
+            />
         </ScrollView>
     );
 }

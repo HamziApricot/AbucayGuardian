@@ -9,7 +9,7 @@ import { useAlert } from '../context/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { getDeviceBatteryLevel, subscribeToBatteryLevel } from '../services/batteryService';
+import { getDeviceBatteryLevel, getDevicePowerState, subscribeToBatteryHealth } from '../services/batteryService';
 import { Colors, Spacing, BorderRadius } from '../constants/theme';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
@@ -18,6 +18,15 @@ import { LocationTrackingService, getBackgroundGeolocation } from '../services/L
 import { checkBatteryOptimizations } from '../services/batteryOptimization';
 import { startBackgroundLocationTracking } from '../services/BackgroundLocationTask';
 import { FamilyMap3D, type FamilyMember3D, type FamilyMap3DHandle } from '../components/FamilyMap3D';
+import { WeatherHUD, type WeatherDisplayMode } from '../components/WeatherHUD';
+import {
+    fetchRainViewerFrames,
+    fetchPointForecast,
+    getRainViewerTileUrl,
+    getCurrentHourIndex,
+    type RainViewerData,
+    type PointForecast,
+} from '../services/WeatherService';
 import { TurnByTurnHUD } from '../components/TurnByTurnHUD';
 import {
     getTurnByTurnRoute,
@@ -44,6 +53,7 @@ import {
 } from '../utils/cache';
 import { getTrackingStatus, formatFromAgo } from '../utils/tracking';
 import { sendEmergencyPushNotification } from '../services/EmergencyNotificationService';
+import { INITIAL_SAFETY_GEOJSON } from '../services/SafetyPOIService';
 
 /**
  * Calculates bearing angle in degrees (0-360) from coordinate 1 to coordinate 2.
@@ -79,13 +89,28 @@ export default function FamilyTrackerScreen() {
     const insets = useSafeAreaInsets();
     const { showAlert, showToast } = useAlert();
     const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(null);
-    const [familyLocations, setFamilyLocations] = useState<(FamilyMember & { lat?: number; lng?: number; updated_at?: string; heading?: number | null })[]>([]);
+    const [familyLocations, setFamilyLocations] = useState<(FamilyMember & { lat?: number; lng?: number; updated_at?: string; heading?: number | null; is_charging?: boolean; low_power_mode?: boolean })[]>([]);
     const [loading, setLoading] = useState(true);
     const [sharing, setSharing] = useState(false);
     const [userSpeed, setUserSpeed] = useState<number>(0);
     const [userAccuracy, setUserAccuracy] = useState<number>(5);
     const [userBattery, setUserBattery] = useState<number>(1.0);
+    const [userIsCharging, setUserIsCharging] = useState<boolean>(false);
+    const [userLowPowerMode, setUserLowPowerMode] = useState<boolean>(false);
     const [userHeading, setUserHeading] = useState<number>(0);
+    const userBatteryRef = useRef<number>(1.0);
+    const userChargingRef = useRef<boolean>(false);
+    const userLowPowerRef = useRef<boolean>(false);
+    const myLocationRef = useRef<{ lat: number; lng: number } | null>(null);
+    const userSpeedRef = useRef<number>(0);
+    const userAccuracyRef = useRef<number>(5);
+    const lastDbSyncRef = useRef<{ time: number; lat: number; lng: number; bat: number; charging: boolean }>({
+        time: 0,
+        lat: 0,
+        lng: 0,
+        bat: -1,
+        charging: false,
+    });
     const [userRouteHistory, setUserRouteHistory] = useState<[number, number][]>([]);
     const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
     const [isCollapsed, setIsCollapsed] = useState(false);
@@ -110,6 +135,74 @@ export default function FamilyTrackerScreen() {
     const dangerBannerAnim = useRef(new Animated.Value(-160)).current;
     const dangerPulseAnim = useRef(new Animated.Value(1)).current;
     const dangerSirenRotate = useRef(new Animated.Value(0)).current;
+
+    // Weather radar & wind streamline state
+    const [isWeatherVisible, setIsWeatherVisible] = useState(false);
+    const [weatherMode, setWeatherMode] = useState<WeatherDisplayMode>('both');
+    const [radarData, setRadarData] = useState<RainViewerData | null>(null);
+    const [activeFrameIndex, setActiveFrameIndex] = useState(0);
+    const [pointForecast, setPointForecast] = useState<PointForecast | null>(null);
+    const [selectedHourIndex, setSelectedHourIndex] = useState(0);
+    const [isLoadingWeather, setIsLoadingWeather] = useState(false);
+
+    // Load weather data on demand or when center changes
+    useEffect(() => {
+        if (!isWeatherVisible) return;
+        let isMounted = true;
+        setIsLoadingWeather(true);
+
+        const lat = myLocation?.lat ?? 14.7275;
+        const lng = myLocation?.lng ?? 120.5378;
+
+        Promise.all([
+            fetchRainViewerFrames(),
+            fetchPointForecast(lat, lng),
+        ]).then(([rvData, fcData]) => {
+            if (!isMounted) return;
+            setRadarData(rvData);
+            if (rvData.frames.length > 0) {
+                setActiveFrameIndex(rvData.frames.length - 1);
+            }
+            if (fcData) {
+                setPointForecast(fcData);
+                setSelectedHourIndex(getCurrentHourIndex(fcData.hourly));
+            }
+            setIsLoadingWeather(false);
+        }).catch((err) => {
+            console.warn('[FamilyTrackerScreen] Weather load error:', err);
+            if (isMounted) setIsLoadingWeather(false);
+        });
+
+        return () => { isMounted = false; };
+    }, [isWeatherVisible, myLocation?.lat, myLocation?.lng]);
+
+    const activeTileUrl = React.useMemo(() => {
+        if (!radarData || !radarData.frames || radarData.frames.length === 0) return null;
+        const frame = radarData.frames[activeFrameIndex] || radarData.frames[radarData.frames.length - 1];
+        if (!frame) return null;
+        return getRainViewerTileUrl(radarData.host, frame.path, 512, 2, 1, 1);
+    }, [radarData, activeFrameIndex]);
+
+    const currentWindSpeedMs = React.useMemo(() => {
+        if (!pointForecast?.hourly?.wind_speed_10m) return 3.5;
+        const speedKmh = pointForecast.hourly.wind_speed_10m[selectedHourIndex] ?? 12;
+        return speedKmh / 3.6;
+    }, [pointForecast, selectedHourIndex]);
+
+    const currentWindDirectionDeg = React.useMemo(() => {
+        if (!pointForecast?.hourly?.wind_direction_10m) return 45;
+        return pointForecast.hourly.wind_direction_10m[selectedHourIndex] ?? 45;
+    }, [pointForecast, selectedHourIndex]);
+
+    const toggleWeather = () => {
+        setIsWeatherVisible((prev) => {
+            const next = !prev;
+            if (next) {
+                collapseCard(); // Automatically slide bottom sheet down to expose map & radar
+            }
+            return next;
+        });
+    };
 
     const visibleSOSAlert = React.useMemo(() => {
         return activeSOSAlerts.find((a) => !dismissedSOSIds.includes(a.id)) || null;
@@ -222,26 +315,54 @@ export default function FamilyTrackerScreen() {
         return () => clearInterval(timer);
     }, [user?.id]);
 
-    // Query and subscribe to true device battery percentage safely
+    // Query and subscribe to real-time device battery percentage, charging & low-power health
     useEffect(() => {
         let unsubscribe: (() => void) | null = null;
 
-        const updateBattery = async () => {
+        const initBattery = async () => {
             try {
-                const level = await getDeviceBatteryLevel();
-                if (level !== null && level >= 0) {
-                    setUserBattery(level);
+                const power = await getDevicePowerState();
+                if (power) {
+                    setUserBattery(power.level);
+                    setUserIsCharging(power.isCharging);
+                    setUserLowPowerMode(power.lowPowerMode);
+                    userBatteryRef.current = power.level;
+                    userChargingRef.current = power.isCharging;
+                    userLowPowerRef.current = power.lowPowerMode;
+                } else {
+                    const level = await getDeviceBatteryLevel();
+                    if (level !== null && level >= 0) {
+                        setUserBattery(level);
+                        userBatteryRef.current = level;
+                    }
                 }
             } catch (e) {
                 console.warn('[Battery] Query error:', e);
             }
         };
 
-        updateBattery();
+        initBattery();
 
-        unsubscribe = subscribeToBatteryLevel((batteryLevel) => {
-            if (batteryLevel >= 0) {
-                setUserBattery(batteryLevel);
+        unsubscribe = subscribeToBatteryHealth((info) => {
+            setUserBattery(info.level);
+            setUserIsCharging(info.isCharging);
+            setUserLowPowerMode(info.lowPowerMode);
+            userBatteryRef.current = info.level;
+            userChargingRef.current = info.isCharging;
+            userLowPowerRef.current = info.lowPowerMode;
+
+            // Immediately broadcast battery health update to family map even when stationary
+            if (myLocationRef.current) {
+                syncLocationToSupabaseAndFamily(
+                    myLocationRef.current,
+                    userSpeedRef.current,
+                    userAccuracyRef.current,
+                    info.level,
+                    userHeadingRef.current,
+                    info.isCharging,
+                    info.lowPowerMode,
+                    true // force DB sync on battery/charging change
+                );
             }
         });
 
@@ -250,18 +371,22 @@ export default function FamilyTrackerScreen() {
                 unsubscribe();
             }
         };
-    }, []);
+    }, [user?.id]);
 
-    // Unified helper: Broadcasts live location peer-to-peer and syncs to Supabase with schema-safe column fallback
+    // Unified helper: Broadcasts live location & battery health peer-to-peer and syncs to Supabase
     const syncLocationToSupabaseAndFamily = async (
         coords: { lat: number; lng: number },
         speed: number = 0,
         accuracy: number = 5,
-        battery: number = 1.0,
-        heading: number = 0
+        battery: number = userBatteryRef.current,
+        heading: number = userHeadingRef.current,
+        isCharging: boolean = userChargingRef.current,
+        lowPowerMode: boolean = userLowPowerRef.current,
+        forceDbSync: boolean = false
     ) => {
         if (!user?.id) return;
         const nowIso = new Date().toISOString();
+        const nowMs = Date.now();
 
         // Always save last known coordinates to local storage for instant offline boot
         saveLastKnownLocation(coords);
@@ -280,7 +405,7 @@ export default function FamilyTrackerScreen() {
             return;
         }
 
-        // 1. Peer-to-peer broadcast for instant real-time UI indicator on all circle members' devices
+        // 1. Peer-to-peer broadcast for instant real-time UI indicator on all circle members' devices (0ms DB latency)
         try {
             await supabase.channel('family-broadcast').send({
                 type: 'broadcast',
@@ -292,11 +417,32 @@ export default function FamilyTrackerScreen() {
                     accuracy,
                     speed,
                     battery,
+                    is_charging: isCharging,
+                    low_power_mode: lowPowerMode,
                     heading,
                     updated_at: nowIso,
                 },
             });
         } catch { }
+
+        // Determine if DB write is needed (moved >= 3m, >= 5s since last DB sync, or battery % / charging changed)
+        const lastSync = lastDbSyncRef.current;
+        const distMoved = lastSync.time > 0 ? calculateDistanceMeters(lastSync.lat, lastSync.lng, coords.lat, coords.lng) : 999;
+        const batPct = Math.round(battery * 100);
+        const batChanged = Math.round(lastSync.bat * 100) !== batPct || lastSync.charging !== isCharging;
+        const timeElapsed = nowMs - lastSync.time >= 5000;
+
+        if (!forceDbSync && !batChanged && !timeElapsed && distMoved < 3) {
+            return;
+        }
+
+        lastDbSyncRef.current = {
+            time: nowMs,
+            lat: coords.lat,
+            lng: coords.lng,
+            bat: battery,
+            charging: isCharging,
+        };
 
         // 2. Upsert to tracker table with graceful column fallback (handles schema variations)
         try {
@@ -483,6 +629,7 @@ export default function FamilyTrackerScreen() {
         // 1. Immediately load last known user location so map renders instantly offline
         getLastKnownLocation().then((cachedLoc) => {
             if (cachedLoc?.lat && cachedLoc?.lng) {
+                myLocationRef.current = cachedLoc;
                 setMyLocation(cachedLoc);
                 setLoading(false);
             }
@@ -543,11 +690,48 @@ export default function FamilyTrackerScreen() {
             console.log('[LocationTrackingService] Initialized in fallback mode:', e);
         }
 
-        // Subscribe to real-time updates from others
+        // Subscribe to real-time updates from others (instant in-memory patch from payload.new)
         const trackerSub = supabase
             .channel(`tracker-updates-${user.id}`)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'tracker' }, () => {
-                fetchFamilyLocations();
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'tracker' }, (payload) => {
+                const row = payload.new as any;
+                if (row && row.user_id && row.user_id !== user.id) {
+                    let computedHeading = row.heading;
+                    if (computedHeading == null && row.lat && row.lng) {
+                        const prev = prevCoordsRef.current[row.user_id];
+                        if (prev) {
+                            const dist = calculateDistanceMeters(prev.lat, prev.lng, row.lat, row.lng);
+                            if (dist > 1.5) {
+                                computedHeading = Math.round(calculateBearing(prev.lat, prev.lng, row.lat, row.lng));
+                            }
+                        }
+                        prevCoordsRef.current[row.user_id] = { lat: row.lat, lng: row.lng };
+                    }
+                    setFamilyLocations((prev) => {
+                        const matched = prev.some((m) => m.member_user_id === row.user_id);
+                        if (!matched) {
+                            fetchFamilyLocations();
+                            return prev;
+                        }
+                        return prev.map((m) => {
+                            if (m.member_user_id === row.user_id) {
+                                return {
+                                    ...m,
+                                    lat: row.lat ?? m.lat,
+                                    lng: row.lng ?? m.lng,
+                                    accuracy: row.accuracy ?? m.accuracy,
+                                    speed: row.speed ?? m.speed,
+                                    battery: row.battery !== undefined ? row.battery : m.battery,
+                                    heading: computedHeading !== undefined ? computedHeading : m.heading,
+                                    updated_at: row.updated_at || new Date().toISOString(),
+                                };
+                            }
+                            return m;
+                        });
+                    });
+                } else {
+                    fetchFamilyLocations();
+                }
             })
             .subscribe();
 
@@ -598,11 +782,13 @@ export default function FamilyTrackerScreen() {
                         if (m.member_user_id === payload.user_id) {
                             return {
                                 ...m,
-                                lat: payload.lat,
-                                lng: payload.lng,
+                                lat: payload.lat ?? m.lat,
+                                lng: payload.lng ?? m.lng,
                                 accuracy: payload.accuracy ?? m.accuracy,
                                 speed: payload.speed ?? m.speed,
                                 battery: payload.battery !== undefined ? payload.battery : m.battery,
+                                is_charging: payload.is_charging !== undefined ? payload.is_charging : m.is_charging,
+                                low_power_mode: payload.low_power_mode !== undefined ? payload.low_power_mode : m.low_power_mode,
                                 heading: memberHeading !== undefined ? memberHeading : m.heading,
                                 updated_at: payload.updated_at || m.updated_at,
                             };
@@ -651,7 +837,7 @@ export default function FamilyTrackerScreen() {
                 if (payload.lat && payload.lng) {
                     setFamilyLocations((prev) =>
                         prev.map((m) => {
-                            if (m.member_user_id === payload.from_user_id || m.user_id === payload.from_user_id || m.id === payload.from_user_id) {
+                            if ((m.member_user_id && m.member_user_id === payload.from_user_id) || m.id === payload.from_user_id) {
                                 return {
                                     ...m,
                                     lat: payload.lat,
@@ -676,6 +862,12 @@ export default function FamilyTrackerScreen() {
             .on('broadcast', { event: 'sos_resolved' }, ({ payload }) => {
                 if (!payload?.user_id) return;
                 setActiveSOSAlerts((prev) => prev.filter((a) => a.userId !== payload.user_id));
+            })
+            .on('broadcast', { event: 'member_paired' }, ({ payload }) => {
+                if (!payload) return;
+                if (payload.target_user_id === user.id || payload.paired_by_user_id === user.id) {
+                    fetchFamilyLocations();
+                }
             })
             .subscribe();
 
@@ -750,9 +942,16 @@ export default function FamilyTrackerScreen() {
                 accuracy: Location.Accuracy.Balanced,
             });
             const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+            const curAcc = Math.round(loc.coords.accuracy ?? 5);
+            const curSpeed = Math.max(0, loc.coords.speed ?? 0);
+
+            myLocationRef.current = coords;
+            userSpeedRef.current = curSpeed;
+            userAccuracyRef.current = curAcc;
+
             setMyLocation(coords);
-            setUserAccuracy(Math.round(loc.coords.accuracy ?? 5));
-            setUserSpeed(Math.max(0, loc.coords.speed ?? 0));
+            setUserAccuracy(curAcc);
+            setUserSpeed(curSpeed);
             setLoading(false);
             saveLastKnownLocation(coords);
             mapRef.current?.animateToRegion?.({
@@ -762,10 +961,13 @@ export default function FamilyTrackerScreen() {
             // Sync or buffer coordinates
             syncLocationToSupabaseAndFamily(
                 coords,
-                loc.coords.speed ?? 0,
-                Math.round(loc.coords.accuracy ?? 5),
-                userBattery,
-                userHeadingRef.current
+                curSpeed,
+                curAcc,
+                userBatteryRef.current,
+                userHeadingRef.current,
+                userChargingRef.current,
+                userLowPowerRef.current,
+                true
             );
         } catch (posErr) {
             console.warn('[Location] Initial position query offline or waiting for satellite lock:', posErr);
@@ -786,12 +988,12 @@ export default function FamilyTrackerScreen() {
             console.warn('[FamilyTracker] Heading watch error:', e);
         }
 
-        // Continuous high-precision tracking (satellite GPS)
+        // Continuous real-time tracking (satellite GPS - every 2 seconds even when stationary or micro-moving)
         const subscription = await Location.watchPositionAsync(
             {
                 accuracy: Location.Accuracy.Highest, // True satellite GNSS / GPS!
-                distanceInterval: 2, // Fine-grained 2-meter resolution
-                timeInterval: 4000, // Update at least every 4 seconds for live positioning
+                distanceInterval: 0, // Fire updates even during small shifts or stationary battery/heading updates
+                timeInterval: 2000, // Real-time 2-second location ticks
             },
             async (newLocation) => {
                 const newCoords = { lat: newLocation.coords.latitude, lng: newLocation.coords.longitude };
@@ -804,6 +1006,10 @@ export default function FamilyTrackerScreen() {
                     setUserHeading(rounded);
                 }
 
+                myLocationRef.current = newCoords;
+                userSpeedRef.current = curSpeed;
+                userAccuracyRef.current = curAcc;
+
                 setMyLocation(newCoords);
                 setLoading(false);
                 saveLastKnownLocation(newCoords);
@@ -814,23 +1020,34 @@ export default function FamilyTrackerScreen() {
                     [newCoords.lng, newCoords.lat],
                 ]);
 
-                // Query fresh device battery safely
-                let curBat = userBattery;
+                // Query fresh device battery & charging state safely
+                let curBat = userBatteryRef.current;
+                let curCharging = userChargingRef.current;
+                let curLowPower = userLowPowerRef.current;
                 try {
-                    const freshBat = await getDeviceBatteryLevel();
-                    if (freshBat !== null && freshBat >= 0) {
-                        curBat = freshBat;
-                        setUserBattery(freshBat);
+                    const power = await getDevicePowerState();
+                    if (power) {
+                        curBat = power.level;
+                        curCharging = power.isCharging;
+                        curLowPower = power.lowPowerMode;
+                        userBatteryRef.current = curBat;
+                        userChargingRef.current = curCharging;
+                        userLowPowerRef.current = curLowPower;
+                        setUserBattery(curBat);
+                        setUserIsCharging(curCharging);
+                        setUserLowPowerMode(curLowPower);
                     }
                 } catch { }
 
-                // Automatically sync coordinates, heading, and battery to Supabase and live family circle
+                // Automatically sync coordinates, heading, and battery health to Supabase and live family circle
                 syncLocationToSupabaseAndFamily(
                     newCoords,
                     curSpeed,
                     curAcc,
                     curBat,
-                    userHeadingRef.current
+                    userHeadingRef.current,
+                    curCharging,
+                    curLowPower
                 );
 
                 // If in-map turn-by-turn navigation is active, track live route progression
@@ -1067,9 +1284,15 @@ export default function FamilyTrackerScreen() {
                 if (activeSosEvents && activeSosEvents.length > 0) {
                     const freshAlerts: ActiveSOSDanger[] = [];
                     activeSosEvents.forEach((evt: any) => {
+                        // Ignore active SOS events older than 12 hours (e.g. stale testing events)
+                        if (evt.triggered_at) {
+                            const ageHours = (Date.now() - new Date(evt.triggered_at).getTime()) / (1000 * 60 * 60);
+                            if (ageHours > 12) return;
+                        }
+
                         const isSelf = evt.user_id === user.id;
                         const matchedMember = merged.find(
-                            (m: any) => m.member_user_id === evt.user_id || m.user_id === evt.user_id || m.id === evt.user_id
+                            (m: any) => (m.member_user_id && m.member_user_id === evt.user_id) || m.id === evt.user_id
                         );
                         if (isSelf || matchedMember) {
                             freshAlerts.push({
@@ -1173,8 +1396,8 @@ export default function FamilyTrackerScreen() {
     // 3. Sort by last active time descending (newest activity first)
     const sortedFamilyMembers = React.useMemo(() => {
         return [...familyLocations].sort((a, b) => {
-            const isSOSA = activeSOSAlerts.some((alert) => alert.userId === a.member_user_id || alert.userId === a.user_id || alert.userId === a.id);
-            const isSOSB = activeSOSAlerts.some((alert) => alert.userId === b.member_user_id || alert.userId === b.user_id || alert.userId === b.id);
+            const isSOSA = activeSOSAlerts.some((alert) => (a.member_user_id && alert.userId === a.member_user_id) || alert.userId === a.id);
+            const isSOSB = activeSOSAlerts.some((alert) => (b.member_user_id && alert.userId === b.member_user_id) || alert.userId === b.id);
 
             // SOS members strictly first
             if (isSOSA && !isSOSB) return -1;
@@ -1215,6 +1438,8 @@ export default function FamilyTrackerScreen() {
                 accuracy: userAccuracy,
                 speed: userSpeed,
                 batteryLevel: userBattery,
+                isCharging: userIsCharging,
+                lowPowerMode: userLowPowerMode,
                 heading: userHeading,
                 isOnline: true,
                 lastUpdated: new Date().toISOString(),
@@ -1233,7 +1458,7 @@ export default function FamilyTrackerScreen() {
                 const status = getTrackingStatus(m.updated_at, true);
                 const assignedColor = MEMBER_COLORS[index % MEMBER_COLORS.length];
                 const matchedSOS = activeSOSAlerts.find(
-                    (a) => a.userId === m.member_user_id || a.userId === m.user_id || a.userId === m.id
+                    (a) => (m.member_user_id && a.userId === m.member_user_id) || a.userId === m.id
                 );
                 const isMemberInSOS = Boolean(matchedSOS);
 
@@ -1247,6 +1472,8 @@ export default function FamilyTrackerScreen() {
                     accuracy: m.accuracy ?? 5,
                     speed: m.speed ?? 0,
                     batteryLevel: m.battery != null && m.battery > 0 ? (m.battery > 1 ? m.battery / 100 : m.battery) : (matchedSOS?.battery || null),
+                    isCharging: Boolean(m.is_charging),
+                    lowPowerMode: Boolean(m.low_power_mode),
                     heading: m.heading != null && !isNaN(m.heading) ? m.heading : null,
                     isOnline: status.isActive,
                     lastUpdated: m.updated_at || new Date().toISOString(),
@@ -1259,7 +1486,7 @@ export default function FamilyTrackerScreen() {
         });
 
         return list;
-    }, [myLocation, user?.id, userProfile, userAccuracy, userSpeed, userBattery, userHeading, userRouteHistory, sortedFamilyMembers, isMarkedSafe, activeSOSAlerts]);
+    }, [myLocation, user?.id, userProfile, userAccuracy, userSpeed, userBattery, userIsCharging, userLowPowerMode, userHeading, userRouteHistory, sortedFamilyMembers, isMarkedSafe, activeSOSAlerts]);
 
     const selectedMember3D = React.useMemo(() => {
         if (!selectedMemberId) return null;
@@ -1478,33 +1705,31 @@ export default function FamilyTrackerScreen() {
 
         try {
             const cachedPois = await AsyncStorage.getItem('OFFLINE_SAFETY_POIS_GEOJSON');
-            if (cachedPois) {
-                const geo = JSON.parse(cachedPois);
-                const shelters = (geo.features || []).filter(
-                    (f: any) => f.properties?.category === 'evacuation'
+            const geo = cachedPois ? JSON.parse(cachedPois) : INITIAL_SAFETY_GEOJSON;
+            const shelters = (geo.features || []).filter(
+                (f: any) => f.properties?.category === 'evacuation'
+            );
+
+            if (shelters.length > 0) {
+                let closest = shelters[0];
+                let minDistance = 999999;
+                shelters.forEach((s: any) => {
+                    const [sLng, sLat] = s.geometry.coordinates;
+                    const dist = Math.hypot(sLat - myLocation.lat, sLng - myLocation.lng);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        closest = s;
+                    }
+                });
+
+                const [cLng, cLat] = closest.geometry.coordinates;
+                const shelterName = closest.properties?.name || 'Evacuation Center';
+
+                await startTurnByTurnNavigation(
+                    { latitude: cLat, longitude: cLng },
+                    shelterName
                 );
-
-                if (shelters.length > 0) {
-                    let closest = shelters[0];
-                    let minDistance = 999999;
-                    shelters.forEach((s: any) => {
-                        const [sLng, sLat] = s.geometry.coordinates;
-                        const dist = Math.hypot(sLat - myLocation.lat, sLng - myLocation.lng);
-                        if (dist < minDistance) {
-                            minDistance = dist;
-                            closest = s;
-                        }
-                    });
-
-                    const [cLng, cLat] = closest.geometry.coordinates;
-                    const shelterName = closest.properties?.name || 'Evacuation Center';
-
-                    await startTurnByTurnNavigation(
-                        { latitude: cLat, longitude: cLng },
-                        shelterName
-                    );
-                    return;
-                }
+                return;
             }
         } catch (e) {
             console.warn('[Evacuation] Shelter lookup failed:', e);
@@ -1986,6 +2211,12 @@ export default function FamilyTrackerScreen() {
                     }}
                     onMapInteraction={collapseCard}
                     showMemberStrip={false}
+                    isWeatherVisible={isWeatherVisible}
+                    onToggleWeather={toggleWeather}
+                    weatherMode={weatherMode}
+                    activeTileUrl={activeTileUrl}
+                    windSpeedMs={currentWindSpeedMs}
+                    windDirectionDeg={currentWindDirectionDeg}
                 />
             )}
 
@@ -2230,7 +2461,7 @@ export default function FamilyTrackerScreen() {
                                     : null;
                                 const speedKmh = item.speed && item.speed > 0.8 ? Math.round(item.speed * 3.6) : null;
                                 const matchedSOS = activeSOSAlerts.find(
-                                    (a) => a.userId === item.member_user_id || a.userId === item.user_id || a.userId === item.id
+                                    (a) => (item.member_user_id && a.userId === item.member_user_id) || a.userId === item.id
                                 );
                                 const isMemberInSOS = Boolean(matchedSOS);
 
@@ -2273,20 +2504,20 @@ export default function FamilyTrackerScreen() {
                                             {item.name.split(' ')[0]}
                                         </Text>
 
-                                        {/* Battery Percentage Chip */}
+                                        {/* Battery Percentage & Charging Health Chip */}
                                         {batteryPct !== null ? (
                                             <View style={[
                                                 styles.batteryMiniBadge,
-                                                { backgroundColor: batteryPct <= 20 ? '#EF444418' : batteryPct <= 50 ? '#F59E0B18' : '#10B98118' }
+                                                { backgroundColor: item.is_charging ? '#10B98122' : batteryPct <= 20 ? '#EF444418' : batteryPct <= 50 ? '#F59E0B18' : '#10B98118' }
                                             ]}>
                                                 <Ionicons
-                                                    name={batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
+                                                    name={item.is_charging ? 'flash' : batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
                                                     size={9}
-                                                    color={batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#10B981'}
+                                                    color={item.is_charging ? '#059669' : batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#10B981'}
                                                 />
                                                 <Text style={[
                                                     styles.batteryMiniText,
-                                                    { color: batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#047857' }
+                                                    { color: item.is_charging ? '#047857' : batteryPct <= 20 ? '#EF4444' : batteryPct <= 50 ? '#D97706' : '#047857' }
                                                 ]}>
                                                     {batteryPct}%
                                                 </Text>
@@ -2336,6 +2567,23 @@ export default function FamilyTrackerScreen() {
                     </>
                 )}
             </Animated.View>
+
+            {/* Live Weather Radar & Forecast HUD (Mounted above bottom sheet so it's NEVER blocked by family list!) */}
+            {isWeatherVisible && (
+                <WeatherHUD
+                    forecast={pointForecast}
+                    radarFrames={radarData?.frames ?? []}
+                    activeFrameIndex={activeFrameIndex}
+                    onSelectFrameIndex={setActiveFrameIndex}
+                    selectedHourIndex={selectedHourIndex}
+                    onSelectHourIndex={setSelectedHourIndex}
+                    displayMode={weatherMode}
+                    onChangeDisplayMode={setWeatherMode}
+                    onClose={() => setIsWeatherVisible(false)}
+                    isLoading={isLoadingWeather}
+                    bottomOffset={isCollapsed ? Math.max(insets.bottom, 16) + 72 : cardHeight + 8}
+                />
+            )}
         </View>
     );
 }

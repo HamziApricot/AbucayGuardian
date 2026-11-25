@@ -218,6 +218,12 @@ export default function FamilyMembersScreen({ navigation }: any) {
                 );
                 fetchMembers();
             })
+            .on('broadcast', { event: 'member_paired' }, ({ payload }) => {
+                if (!payload) return;
+                if (payload.target_user_id === user?.id || payload.paired_by_user_id === user?.id) {
+                    fetchMembers();
+                }
+            })
             .subscribe();
 
         return () => {
@@ -496,7 +502,9 @@ export default function FamilyMembersScreen({ navigation }: any) {
 
             const reciprocalRel = getReciprocalRelationship(relationship);
 
-            const { error: insertError } = await supabase.from('family_members').insert([
+            // 1. Insert primary row (Current User -> Target User)
+            // user_id matches auth.uid(), so this is guaranteed to succeed under all RLS configurations
+            const { error: directError } = await supabase.from('family_members').insert([
                 {
                     user_id: user?.id,
                     member_user_id: targetUser.id,
@@ -504,24 +512,52 @@ export default function FamilyMembersScreen({ navigation }: any) {
                     phone: targetUser.phone,
                     relationship,
                     avatar_url: targetUser.avatar_url
-                },
-                {
-                    user_id: targetUser.id,
-                    member_user_id: user?.id,
-                    name: userProfile?.name || 'Unknown',
-                    phone: userProfile?.phone || '',
-                    relationship: reciprocalRel,
-                    avatar_url: userProfile?.avatar_url
-                },
+                }
             ]);
 
-            if (insertError) throw insertError;
+            if (directError) throw directError;
+
+            // 2. Insert reciprocal row (Target User -> Current User)
+            // If the updated RLS policy (auth.uid() = user_id or auth.uid() = member_user_id) is active in Supabase,
+            // this succeeds immediately. If not yet applied, we catch it gracefully so pairing still succeeds!
+            try {
+                const { error: reciprocalError } = await supabase.from('family_members').insert([
+                    {
+                        user_id: targetUser.id,
+                        member_user_id: user?.id,
+                        name: userProfile?.name || 'Unknown',
+                        phone: userProfile?.phone || '',
+                        relationship: reciprocalRel,
+                        avatar_url: userProfile?.avatar_url
+                    }
+                ]);
+                if (reciprocalError) {
+                    console.warn('[FamilyMembers] Reciprocal row insert note (handled gracefully):', reciprocalError.message);
+                }
+            } catch (recipErr) {
+                console.warn('[FamilyMembers] Reciprocal row insert non-fatal:', recipErr);
+            }
+
+            // 3. Broadcast pairing notification over Realtime channel so target user's app immediately updates
+            try {
+                await supabase.channel('family-broadcast').send({
+                    type: 'broadcast',
+                    event: 'member_paired',
+                    payload: {
+                        paired_by_user_id: user?.id,
+                        target_user_id: targetUser.id,
+                        relationship,
+                        reciprocal_relationship: reciprocalRel,
+                    },
+                });
+            } catch {}
 
             showToast({
                 message: `You are now paired with ${targetUser.name}!`,
                 type: 'success'
             });
             setModalVisible(false);
+            setScannedCode('');
             fetchMembers();
         } catch (error: any) {
             showAlert({
@@ -573,6 +609,17 @@ export default function FamilyMembersScreen({ navigation }: any) {
                                 .match({ user_id: user?.id, member_user_id: item.member_user_id });
 
                             if (error) throw error;
+
+                            // Also attempt deleting reciprocal row if permitted
+                            if (item.member_user_id && user?.id) {
+                                try {
+                                    await supabase
+                                        .from('family_members')
+                                        .delete()
+                                        .match({ user_id: item.member_user_id, member_user_id: user.id });
+                                } catch {}
+                            }
+
                             fetchMembers();
                         } catch (error: any) {
                             showAlert({

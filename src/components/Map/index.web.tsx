@@ -10,6 +10,7 @@ export const Marker = ({ title, description }: any) => {
 export const Circle = () => null;
 export const Polyline = () => null;
 export const Callout = () => null;
+export const UrlTile = () => null;
 
 const MapViewWrapper = forwardRef((props: any, ref: any) => {
     return (

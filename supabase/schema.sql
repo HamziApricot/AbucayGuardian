@@ -41,13 +41,13 @@ create table if not exists public.family_members (
 );
 alter table public.family_members enable row level security;
 drop policy if exists "Users can view own family members" on public.family_members;
-create policy "Users can view own family members" on public.family_members for select using (auth.uid() = user_id);
+create policy "Users can view own family members" on public.family_members for select using (auth.uid() = user_id or auth.uid() = member_user_id);
 drop policy if exists "Users can insert family members" on public.family_members;
-create policy "Users can insert family members" on public.family_members for insert with check (auth.uid() = user_id);
+create policy "Users can insert family members" on public.family_members for insert with check (auth.uid() = user_id or auth.uid() = member_user_id);
 drop policy if exists "Users can update family members" on public.family_members;
 create policy "Users can update family members" on public.family_members for update using (auth.uid() = user_id or auth.uid() = member_user_id);
 drop policy if exists "Users can delete family members" on public.family_members;
-create policy "Users can delete family members" on public.family_members for delete using (auth.uid() = user_id);
+create policy "Users can delete family members" on public.family_members for delete using (auth.uid() = user_id or auth.uid() = member_user_id);
 
 -- ==================== EMERGENCY PLANS ====================
 create table if not exists public.emergency_plans (

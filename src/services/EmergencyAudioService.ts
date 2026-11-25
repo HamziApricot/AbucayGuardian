@@ -44,6 +44,22 @@ export async function stopEmergencyAlarmAudio(): Promise<boolean> {
 }
 
 /**
+ * Adjusts the playing alarm MediaPlayer volume (0.0 to 1.0).
+ * Useful for ducking the siren while Text-to-Speech voice reads the emergency dialogue.
+ */
+export async function setEmergencyAlarmVolume(volume: number): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.setAlarmVolume !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.setAlarmVolume(volume);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Checks whether the app currently has Do Not Disturb (DND) policy access (ACCESS_NOTIFICATION_POLICY).
  */
 export async function isDndAccessGranted(): Promise<boolean> {

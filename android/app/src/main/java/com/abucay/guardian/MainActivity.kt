@@ -7,16 +7,66 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.view.KeyEvent
 import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
+import com.facebook.react.ReactApplication
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  // Covert volume pattern state: UP -> UP -> DOWN -> UP within 2.5 seconds
+  private val keyTimestamps = mutableListOf<Long>()
+  private val keySequence = mutableListOf<Int>()
+  private val TARGET_PATTERN = listOf(
+    KeyEvent.KEYCODE_VOLUME_UP,
+    KeyEvent.KEYCODE_VOLUME_UP,
+    KeyEvent.KEYCODE_VOLUME_DOWN,
+    KeyEvent.KEYCODE_VOLUME_UP
+  )
+  private val PATTERN_WINDOW_MS = 2500L
+
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (event.action == KeyEvent.ACTION_DOWN) {
+      val keyCode = event.keyCode
+      if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+        val now = System.currentTimeMillis()
+        while (keyTimestamps.isNotEmpty() && (now - keyTimestamps.first()) > PATTERN_WINDOW_MS) {
+          keyTimestamps.removeAt(0)
+          keySequence.removeAt(0)
+        }
+        keyTimestamps.add(now)
+        keySequence.add(keyCode)
+
+        if (keySequence.size >= TARGET_PATTERN.size) {
+          val tail = keySequence.takeLast(TARGET_PATTERN.size)
+          if (tail == TARGET_PATTERN) {
+            keyTimestamps.clear()
+            keySequence.clear()
+            emitCovertVolumeEvent()
+            return true // Consumes the event to suppress the Android system volume slider HUD
+          }
+        }
+      }
+    }
+    return super.dispatchKeyEvent(event)
+  }
+
+  private fun emitCovertVolumeEvent() {
+    try {
+      val context = (application as? ReactApplication)?.reactHost?.currentReactContext
+        ?: try { reactInstanceManager?.currentReactContext } catch (_: Throwable) { null }
+      context
+        ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        ?.emit("onCovertVolumeSOS", null)
+    } catch (_: Throwable) {}
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.

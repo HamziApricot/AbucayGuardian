@@ -3,7 +3,7 @@ import { requireOptionalNativeModule } from 'expo';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
-import { getDeviceBatteryLevel } from './batteryService';
+import { getDeviceBatteryLevel, getDevicePowerState } from './batteryService';
 
 export const BACKGROUND_LOCATION_TASK = 'ABUCAY_BACKGROUND_LOCATION_TASK';
 const USER_ID_KEY = 'ABUCAY_BACKGROUND_USER_ID';
@@ -48,7 +48,10 @@ try {
           try {
             const userId = await AsyncStorage.getItem(USER_ID_KEY);
             if (userId) {
-              const battery = await getDeviceBatteryLevel().catch(() => null);
+              const powerInfo = await getDevicePowerState().catch(() => null);
+              const battery = powerInfo?.level ?? (await getDeviceBatteryLevel().catch(() => null));
+              const isCharging = powerInfo?.isCharging ?? false;
+              const lowPowerMode = powerInfo?.lowPowerMode ?? false;
 
               // 1. Sync user's real-time position to Supabase tracker table
               await supabase.from('tracker').upsert({
@@ -93,6 +96,8 @@ try {
                   accuracy,
                   speed,
                   battery,
+                  is_charging: isCharging,
+                  low_power_mode: lowPowerMode,
                   heading,
                   updated_at: nowIso,
                 },
@@ -221,10 +226,10 @@ export async function startBackgroundLocationTracking(userId: string): Promise<b
     // 4. Start continuous location updates with Foreground Service on Android & indicator on iOS
     // Ensures OS never throttles or terminates background tracking when minimized or closed
     await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-      accuracy: Location.Accuracy.Balanced,
-      timeInterval: 15000, // sample every 15s
-      distanceInterval: 10, // or every 10 meters moved
-      deferredUpdatesInterval: 15000,
+      accuracy: Location.Accuracy.High,
+      timeInterval: 8000, // sample every 8s
+      distanceInterval: 5, // or every 5 meters moved
+      deferredUpdatesInterval: 8000,
       showsBackgroundLocationIndicator: true, // iOS active blue bar
       pausesUpdatesAutomatically: false,
       foregroundService: Platform.OS === 'android' ? {

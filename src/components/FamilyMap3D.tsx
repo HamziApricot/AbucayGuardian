@@ -13,6 +13,8 @@ export interface FamilyMember3D {
   speed: number;
   heading?: number | null; // Facing/travel direction in degrees (0 - 360)
   batteryLevel?: number | null; // 0.0 to 1.0 or null/undefined if unknown
+  isCharging?: boolean;
+  lowPowerMode?: boolean;
   isOnline: boolean;
   lastUpdated: string;
   color?: string;
@@ -42,6 +44,10 @@ export interface FamilyMap3DHandle {
 
 import type { NavigationRoute } from '../services/RoutingService';
 export type { NavigationRoute };
+export * from '../services/WeatherService';
+export { WindParticleOverlay } from './WindParticleOverlay';
+import { WeatherHUD, type WeatherDisplayMode } from './WeatherHUD';
+export { WeatherHUD, type WeatherDisplayMode };
 
 export interface FamilyMap3DProps {
   members: FamilyMember3D[];
@@ -52,6 +58,15 @@ export interface FamilyMap3DProps {
   onMapInteraction?: () => void;
   showSafetyPOIs?: boolean;
   navigationRoute?: NavigationRoute | null;
+  enableWeatherOverlay?: boolean;
+  initialWeatherVisible?: boolean;
+  isWeatherVisible?: boolean;
+  onToggleWeather?: () => void;
+  weatherMode?: WeatherDisplayMode;
+  activeTileUrl?: string | null;
+  windSpeedMs?: number;
+  windDirectionDeg?: number;
+  weatherBottomOffset?: number;
 }
 
 export const OPENFREEMAP_STYLES = {
