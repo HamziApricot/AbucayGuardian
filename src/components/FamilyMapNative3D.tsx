@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useMemo, useImperativeHandle, forwardRef } from 'react';
-import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Animated } from 'react-native';
+import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { HeadingBeamSvg, PinPointerTipSvg } from './MarkerVisuals';
 import { getTrackingStatus } from '../utils/tracking';
 import { fetchAndCacheSafetyPOIs, INITIAL_SAFETY_GEOJSON } from '../services/SafetyPOIService';
 import type { FamilyMember3D, FamilyMap3DHandle, FamilyMap3DProps } from './FamilyMap3D';
@@ -197,6 +198,12 @@ const AnimatedNativeMarker: React.FC<{
   const isSOS = Boolean(member.isSOS);
   const effectiveMarkerColor = isSOS ? '#DC2626' : markerColor;
   const effectiveStatusColor = isSOS ? '#DC2626' : statusColor;
+  const ringColor = isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : effectiveMarkerColor;
+  const beamColor = isSOS ? '#EF4444' : isSelf ? '#2563EB' : effectiveMarkerColor;
+  const safeGradId = useMemo(
+    () => (member.id || 'member').replace(/[^a-zA-Z0-9_-]/g, '') || 'member',
+    [member.id]
+  );
 
   const batteryPct =
     member.batteryLevel != null && member.batteryLevel >= 0
@@ -223,7 +230,8 @@ const AnimatedNativeMarker: React.FC<{
   const markerScale = useRef(new Animated.Value(0.1)).current;
   const markerOpacity = useRef(new Animated.Value(0)).current;
   const markerTranslateY = useRef(new Animated.Value(-24)).current;
-  const avatarScale = useRef(new Animated.Value(isSOS ? 1.25 : isSelected ? 1.15 : 1)).current;
+  const avatarScale = useRef(new Animated.Value(isSOS ? 1.2 : isSelected ? 1.12 : 1)).current;
+  const sosPulse = useRef(new Animated.Value(0)).current;
 
   const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected || isSOS);
   const badgeAnim = useRef(new Animated.Value(isSelected || isSOS ? 1 : 0)).current;
@@ -237,10 +245,37 @@ const AnimatedNativeMarker: React.FC<{
   }, []);
 
   useEffect(() => {
+    if (!isSOS) {
+      sosPulse.stopAnimation();
+      sosPulse.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(sosPulse, {
+        toValue: 1,
+        duration: 1500,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: false,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isSOS]);
+
+  const sosPulseScale = sosPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.88, 1.72],
+  });
+  const sosPulseOpacity = sosPulse.interpolate({
+    inputRange: [0, 0.7, 1],
+    outputRange: [0.75, 0.25, 0],
+  });
+
+  useEffect(() => {
     if (isSelected || isSOS) {
       setIsBadgeVisible(true);
       Animated.parallel([
-        Animated.spring(avatarScale, { toValue: isSOS ? 1.25 : 1.15, friction: 6, tension: 70, useNativeDriver: false }),
+        Animated.spring(avatarScale, { toValue: isSOS ? 1.2 : 1.12, friction: 6, tension: 70, useNativeDriver: false }),
         Animated.spring(badgeAnim, { toValue: 1, friction: 6, tension: 65, useNativeDriver: false }),
       ]).start();
     } else {
@@ -315,55 +350,89 @@ const AnimatedNativeMarker: React.FC<{
           />
         )}
 
-        {/* Facing Direction Indicator (Vision Flashlight Beam & Arrow, compensated for map rotation) */}
-        {member.heading != null && !isNaN(member.heading) && (
-          <View
-            style={[
-              styles.headingContainer,
-              {
-                transform: [{ rotate: `${((member.heading ?? 0) - mapBearing + 360) % 360}deg` }],
-              },
-            ]}
-          >
-            <View style={[styles.visionBeamCone, { borderTopColor: effectiveMarkerColor + '38' }]} />
-            <View style={[styles.directionArrow, { borderBottomColor: effectiveMarkerColor }]} />
-          </View>
-        )}
-
-        <Animated.View
-          style={[
-            styles.avatarFrame,
-            { borderColor: effectiveMarkerColor, transform: [{ scale: avatarScale }] },
-            isSelected && [styles.avatarFrameSelected, { borderColor: effectiveMarkerColor }],
-            isSOS && { borderColor: '#DC2626', borderWidth: 4, backgroundColor: '#FEF2F2' },
-            isSelf && isNavigating && { borderWidth: 3.5, borderColor: '#2563EB' },
-          ]}
-        >
-          {member.avatarUrl ? (
-            <Image source={{ uri: member.avatarUrl }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatarFallback, { backgroundColor: effectiveMarkerColor }]}>
-              <Text style={styles.avatarInitial}>
-                {member.name ? member.name.charAt(0).toUpperCase() : '?'}
-              </Text>
+        {/* Centered Marker Hub: Heading Beam, SOS Pulse Beacon, and Double-Ring Profile Photo */}
+        <View style={styles.avatarAnchor}>
+          {/* Facing Direction Indicator (Radial FOV Beam & Outer Chevron, compensated for map rotation) */}
+          {member.heading != null && !isNaN(member.heading) && (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.headingContainer,
+                {
+                  transform: [{ rotate: `${((member.heading ?? 0) - mapBearing + 360) % 360}deg` }],
+                },
+              ]}
+            >
+              <HeadingBeamSvg color={beamColor} gradientId={`heading-beam-${safeGradId}`} />
             </View>
           )}
-          <View style={[styles.statusDot, { backgroundColor: effectiveStatusColor }]} />
-        </Animated.View>
 
-        {/* Always-Visible Live Battery Health Pill on Map Pin */}
-        {batteryPct !== null && (
-          <View style={[styles.mapBatteryPill, { backgroundColor: batteryColor }]}>
-            <Ionicons
-              name={isCharging ? 'flash' : batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
-              size={9}
-              color="#FFFFFF"
+          {/* Pulsing Emergency SOS Beacon Ring behind Avatar */}
+          {isSOS && (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.sosPulseRing,
+                {
+                  opacity: sosPulseOpacity,
+                  transform: [{ scale: sosPulseScale }],
+                },
+              ]}
             />
-            <Text style={styles.mapBatteryPillText}>{batteryPct}%</Text>
-          </View>
-        )}
+          )}
 
-        <View style={[styles.pointerTip, { borderTopColor: effectiveMarkerColor }]} />
+          <Animated.View
+            style={[
+              styles.avatarFrame,
+              isSOS && styles.avatarFrameSOS,
+              isSelected && styles.avatarFrameSelected,
+              { transform: [{ scale: avatarScale }] },
+            ]}
+          >
+            <View style={[styles.avatarColorRing, { borderColor: ringColor }]}>
+              {member.avatarUrl ? (
+                <Image source={{ uri: member.avatarUrl }} style={styles.avatar} />
+              ) : (
+                <View style={[styles.avatarFallback, { backgroundColor: ringColor }]}>
+                  {isSelf ? (
+                    <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.avatarInitial}>
+                      {member.name ? member.name.charAt(0).toUpperCase() : '?'}
+                    </Text>
+                  )}
+                </View>
+              )}
+            </View>
+
+            {/* Status Dot / SOS Alert Badge placed at Top-Right to never overlap Battery Pill */}
+            {isSOS ? (
+              <View style={styles.sosMarkerBadge}>
+                <Ionicons name="warning" size={10} color="#FFFFFF" />
+              </View>
+            ) : (
+              <View style={[styles.statusDot, { backgroundColor: effectiveStatusColor }]} />
+            )}
+          </Animated.View>
+        </View>
+
+        {/* Bottom Stack: Live Battery Pill + Clean White-Outlined Pin Tip */}
+        <View style={[styles.bottomPinStack, batteryPct === null && styles.bottomPinStackCompact]}>
+          {batteryPct !== null && (
+            <View style={[styles.mapBatteryPill, { backgroundColor: batteryColor }]}>
+              <Ionicons
+                name={isCharging ? 'flash' : batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
+                size={9}
+                color="#FFFFFF"
+              />
+              <Text style={styles.mapBatteryPillText}>{batteryPct}%</Text>
+            </View>
+          )}
+
+          <View style={styles.pointerTipWrapper}>
+            <PinPointerTipSvg color={ringColor} />
+          </View>
+        </View>
       </Animated.View>
     </Marker>
   );
@@ -947,86 +1016,130 @@ const styles = StyleSheet.create({
     marginTop: -2,
     marginBottom: 4,
   },
+  avatarAnchor: {
+    width: 108,
+    height: 108,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   headingContainer: {
     position: 'absolute',
-    bottom: 5,
-    width: 46,
-    height: 46,
+    width: 108,
+    height: 108,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
     zIndex: 1,
-    pointerEvents: 'none',
   },
-  visionBeamCone: {
+  sosPulseRing: {
     position: 'absolute',
-    top: -42,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 22,
-    borderRightWidth: 22,
-    borderTopWidth: 38,
-    borderStyle: 'solid',
-    backgroundColor: 'transparent',
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-  },
-  directionArrow: {
-    position: 'absolute',
-    top: -12,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderBottomWidth: 10,
-    borderStyle: 'solid',
-    backgroundColor: 'transparent',
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 2.5,
+    borderColor: '#EF4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.24)',
+    zIndex: 2,
   },
   markerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   markerTitleDot: { width: 6, height: 6, borderRadius: 3 },
   memberName: { color: '#0F172A', fontSize: 11.5, fontWeight: '700' },
   metaText: { color: '#64748B', fontSize: 9.5, fontWeight: '600', marginTop: 1 },
   avatarFrame: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2.5,
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 4.5,
+    elevation: 6,
+    zIndex: 4,
+  },
+  avatarFrameSelected: {
+    shadowOpacity: 0.38,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  avatarFrameSOS: {
+    borderColor: '#FFFFFF',
+    backgroundColor: '#FEF2F2',
+    shadowColor: '#DC2626',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.75,
+    shadowRadius: 9,
+    elevation: 10,
+  },
+  avatarColorRing: {
+    width: 47,
+    height: 47,
+    borderRadius: 23.5,
     borderWidth: 3,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarFrameSelected: { transform: [{ scale: 1.1 }] },
-  avatar: { width: 40, height: 40, borderRadius: 20 },
+  avatar: { width: 39, height: 39, borderRadius: 19.5 },
   avatarFallback: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 39,
+    height: 39,
+    borderRadius: 19.5,
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarInitial: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
   statusDot: {
     position: 'absolute',
-    bottom: -1,
+    top: -1,
     right: -1,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    borderWidth: 2.2,
     borderColor: '#FFFFFF',
+    zIndex: 10,
+  },
+  sosMarkerBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#DC2626',
+    borderWidth: 1.8,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    zIndex: 10,
+  },
+  bottomPinStack: {
+    alignItems: 'center',
+    marginTop: -30,
+    zIndex: 15,
+  },
+  bottomPinStackCompact: {
+    marginTop: -27,
   },
   mapBatteryPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 5,
+    gap: 2.5,
+    paddingHorizontal: 6,
     paddingVertical: 1.5,
-    borderRadius: 8,
-    marginTop: -6,
+    borderRadius: 9,
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
-    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1.5 },
+    shadowOpacity: 0.28,
+    shadowRadius: 2,
+    elevation: 4,
     zIndex: 10,
   },
   mapBatteryPillText: {
@@ -1035,15 +1148,10 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0.2,
   },
-  pointerTip: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderTopWidth: 7,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
+  pointerTipWrapper: {
     marginTop: -1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   controlsPanel: { position: 'absolute', top: 54, right: 16, gap: 10 },
   controlButton: {

@@ -52,6 +52,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 try {
                     await AsyncStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(profile));
                 } catch {}
+                if (profile.name && profile.name.trim()) {
+                    supabase.auth.getUser().then(({ data: authData }: any) => {
+                        const metaName = authData?.user?.user_metadata?.name;
+                        if (authData?.user && metaName !== profile.name.trim()) {
+                            supabase.auth.updateUser({ data: { name: profile.name.trim() } }).catch(() => {});
+                        }
+                    }).catch(() => {});
+                }
                 return;
             }
 
@@ -120,17 +128,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     } else {
                         // Check if previously onboarded on this device or has user metadata
                         const onboarded = await AsyncStorage.getItem(ONBOARDED_KEY);
-                        if (onboarded === 'true' || initialSession.user.user_metadata?.name) {
+                        const metaName = initialSession.user.user_metadata?.name || initialSession.user.user_metadata?.full_name;
+                        if (onboarded === 'true' || metaName) {
                             const fallbackProfile: UserProfile = {
                                 id: currentUserId,
-                                name: initialSession.user.user_metadata?.name || initialSession.user.phone || 'Citizen Guardian',
+                                name: metaName || initialSession.user.phone || 'Citizen Guardian',
                                 phone: initialSession.user.phone || '',
                                 pairing_code: '',
                             };
                             setUserProfile(fallbackProfile);
-                            try {
-                                await AsyncStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(fallbackProfile));
-                            } catch {}
+                            if (metaName) {
+                                try {
+                                    await AsyncStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(fallbackProfile));
+                                } catch {}
+                            }
                         }
                     }
 

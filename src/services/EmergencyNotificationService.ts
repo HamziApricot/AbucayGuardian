@@ -14,6 +14,9 @@ import {
   openBatteryOptimizationSettings,
   requestOverlayAndBatteryPermissions,
   moveToBackground,
+  launchEmergencyPopupOverlay,
+  dismissEmergencyPopupOverlay,
+  consumePendingEmergencyAlert,
   startKioskMode,
   stopKioskMode,
   isKioskModeActive,
@@ -30,6 +33,9 @@ export {
   openBatteryOptimizationSettings,
   requestOverlayAndBatteryPermissions,
   moveToBackground,
+  launchEmergencyPopupOverlay,
+  dismissEmergencyPopupOverlay,
+  consumePendingEmergencyAlert,
   startKioskMode,
   stopKioskMode,
   isKioskModeActive,
@@ -88,6 +94,60 @@ try {
 
 let onOpenNDRRMCEmergencyModal: ((data: any) => void) | null = null;
 let pendingNDRRMCAlert: any = null;
+
+const recentIncomingAlertTimestamps = new Map<string, number>();
+const INCOMING_ALERT_DEDUP_MS = 4500;
+
+export function isEmergencyNotificationData(data: any): boolean {
+  if (!data || typeof data !== 'object') return false;
+  return Boolean(
+    data.type === 'ndrrmc_alert' ||
+      data.type === 'loud_ping' ||
+      data.type === 'checkin' ||
+      data.type === 'sos' ||
+      data.emergencyId
+  );
+}
+
+export function normalizeEmergencyAlertData(data: any) {
+  if (!data || typeof data !== 'object') return null;
+  const resolvedType: 'sos' | 'checkin' | 'loud_ping' =
+    data.alertType === 'sos' || data.type === 'sos'
+      ? 'sos'
+      : data.alertType === 'checkin' || data.type === 'checkin'
+      ? 'checkin'
+      : 'loud_ping';
+
+  const rawLat = data.fromLat ?? data.lat;
+  const rawLng = data.fromLng ?? data.lng;
+  const parsedLat = typeof rawLat === 'number' ? rawLat : typeof rawLat === 'string' && rawLat !== '' ? Number(rawLat) : undefined;
+  const parsedLng = typeof rawLng === 'number' ? rawLng : typeof rawLng === 'string' && rawLng !== '' ? Number(rawLng) : undefined;
+  const rawBat = data.battery;
+  const parsedBat = typeof rawBat === 'number' ? rawBat : typeof rawBat === 'string' && rawBat !== '' ? Number(rawBat) : null;
+
+  return {
+    alertType: resolvedType,
+    fromName: String(data.fromName || data.senderName || data.memberName || 'Family Member'),
+    fromAvatar: data.fromAvatar || data.avatarUrl || null,
+    fromPhone: data.fromPhone || null,
+    fromUserId: data.fromUserId || undefined,
+    fromLat: Number.isFinite(parsedLat) ? parsedLat : undefined,
+    fromLng: Number.isFinite(parsedLng) ? parsedLng : undefined,
+    battery: parsedBat !== null && Number.isFinite(parsedBat) ? parsedBat : null,
+    timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
+function shouldDeduplicateIncomingAlert(alertType: string, senderKey: string): boolean {
+  const key = `${alertType}:${senderKey || 'unknown'}`;
+  const now = Date.now();
+  const prev = recentIncomingAlertTimestamps.get(key) || 0;
+  if (now - prev < INCOMING_ALERT_DEDUP_MS) {
+    return true;
+  }
+  recentIncomingAlertTimestamps.set(key, now);
+  return false;
+}
 
 export function registerNDRRMCModalHandler(handler: ((data: any) => void) | null) {
   onOpenNDRRMCEmergencyModal = handler;
@@ -563,7 +623,10 @@ export async function dismissGuardianQuickActionsNotification(): Promise<void> {
  * Keeps the persistent 24/7 background control notification intact.
  */
 export async function dismissEmergencyAlertNotifications(): Promise<void> {
-  // 1. Stop hardware alarm audio & vibration immediately
+  // 1. Stop hardware alarm audio, native overlay & vibration immediately
+  try {
+    await dismissEmergencyPopupOverlay();
+  } catch {}
   try {
     await stopEmergencyAlarmAudio();
   } catch {}
@@ -1174,6 +1237,96 @@ export async function refreshKnownFamilyMembers(currentUserId: string): Promise<
   return knownFamilyMemberUserIds;
 }
 
+function isGenericSenderName(name?: string | null): boolean {
+  if (!name || typeof name !== 'string') return true;
+  const normalized = name.trim().toLowerCase();
+  return (
+    normalized.length === 0 ||
+    normalized === 'family member' ||
+    normalized === 'a family member' ||
+    normalized === 'family circle' ||
+    normalized === 'citizen guardian' ||
+    normalized === 'emergency alert'
+  );
+}
+
+/**
+ * Resolves the sender's actual display name, avatar, and phone using the provided
+ * payload first, then cached family members, then Supabase `users` / `family_members`.
+ */
+async function resolveFamilySenderInfo(
+  currentUserId: string,
+  senderId?: string | null,
+  providedName?: string | null,
+  providedAvatar?: string | null,
+  providedPhone?: string | null
+): Promise<{ name: string; avatar: string | null; phone: string | null }> {
+  let name = !isGenericSenderName(providedName) ? providedName!.trim() : '';
+  let avatar = providedAvatar || null;
+  let phone = providedPhone || null;
+
+  if (senderId && (!name || !avatar || !phone)) {
+    // 1. Fast local lookup from cached family members (0ms, works offline)
+    try {
+      const cachedRaw = await AsyncStorage.getItem('@abucay_cached_family_members');
+      if (cachedRaw) {
+        const parsed = JSON.parse(cachedRaw);
+        if (Array.isArray(parsed)) {
+          const match = parsed.find(
+            (m: any) => m?.member_user_id === senderId || m?.user_id === senderId || m?.member?.id === senderId
+          );
+          if (match) {
+            const cachedName = match.member?.name || match.name;
+            if (!name && !isGenericSenderName(cachedName)) name = cachedName.trim();
+            if (!avatar) avatar = match.member?.avatar_url || match.avatar_url || null;
+            if (!phone) phone = match.member?.phone || match.phone || null;
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Live lookup in `users` table if still missing name or contact details
+    if (!name || !avatar || !phone) {
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('name, avatar_url, phone')
+          .eq('id', senderId)
+          .single();
+        if (userData) {
+          if (!name && !isGenericSenderName(userData.name)) name = userData.name.trim();
+          if (!avatar) avatar = userData.avatar_url || null;
+          if (!phone) phone = userData.phone || null;
+        }
+      } catch {}
+    }
+
+    // 3. Fallback lookup in `family_members` row if `users` query failed
+    if (!name && currentUserId) {
+      try {
+        const { data: fmData } = await supabase
+          .from('family_members')
+          .select('name, phone, avatar_url')
+          .eq('user_id', currentUserId)
+          .eq('member_user_id', senderId)
+          .limit(1)
+          .maybeSingle();
+        if (fmData) {
+          if (!isGenericSenderName(fmData.name)) name = fmData.name.trim();
+          if (!avatar) avatar = fmData.avatar_url || null;
+          if (!phone) phone = fmData.phone || null;
+        }
+      } catch {}
+    }
+  }
+
+  return {
+    name: name || (providedName && providedName.trim()) || 'Family Member',
+    avatar,
+    phone,
+  };
+}
+
 /**
  * Authoritative check to determine if senderId is in currentUserId's family circle.
  * Prevents strangers / non-family members from triggering emergency SOS alarms.
@@ -1309,21 +1462,20 @@ export function listenForEmergencyAlerts(
           return;
         }
 
-        // Fetch sender name, avatar & phone
-        const { data: userData } = await supabase
-          .from('users')
-          .select('name, avatar_url, phone')
-          .eq('id', newEvent.user_id)
-          .single();
+        // Fetch sender name, avatar & phone (with family cache fallback)
+        const resolved = await resolveFamilySenderInfo(currentUserId, newEvent.user_id);
+        const name = resolved.name;
+        if (shouldDeduplicateIncomingAlert('sos', newEvent.user_id)) {
+          return;
+        }
 
-        const name = userData?.name || 'A family member';
         triggerSOSNotification(name, newEvent.lat, newEvent.lng);
 
         const alertData = {
           alertType: 'sos' as const,
           fromName: name,
-          fromAvatar: userData?.avatar_url || null,
-          fromPhone: userData?.phone || null,
+          fromAvatar: resolved.avatar,
+          fromPhone: resolved.phone,
           fromUserId: newEvent.user_id,
           fromLat: newEvent.lat,
           fromLng: newEvent.lng,
@@ -1336,6 +1488,7 @@ export function listenForEmergencyAlerts(
           pendingNDRRMCAlert = alertData;
         }
         currentAlertCallbacks?.onSOSAlert?.(name, newEvent.lat, newEvent.lng);
+        launchEmergencyPopupOverlay(alertData).catch(() => {});
       }
     )
     .subscribe();
@@ -1367,14 +1520,25 @@ export function listenForEmergencyAlerts(
         }
       }
 
-      const sender = payload.from_name || 'Family Circle';
+      const resolved = await resolveFamilySenderInfo(
+        currentUserId,
+        payload.from_user_id,
+        payload.from_name,
+        payload.from_avatar,
+        payload.from_phone
+      );
+      const sender = resolved.name;
+      if (shouldDeduplicateIncomingAlert('sos', payload.from_user_id || sender)) {
+        return;
+      }
+
       triggerSOSNotification(sender, payload.lat, payload.lng, payload.battery);
 
       const alertData = {
         alertType: 'sos' as const,
         fromName: sender,
-        fromAvatar: payload.from_avatar || null,
-        fromPhone: payload.from_phone || null,
+        fromAvatar: resolved.avatar,
+        fromPhone: resolved.phone,
         fromUserId: payload.from_user_id || null,
         fromLat: payload.lat,
         fromLng: payload.lng,
@@ -1389,10 +1553,7 @@ export function listenForEmergencyAlerts(
       }
       currentAlertCallbacks?.onSOSAlert?.(sender, payload.lat, payload.lng, payload.battery);
 
-      try {
-        const deepUrl = `abucayguardian://emergency-alert?type=sos&from=${encodeURIComponent(sender)}`;
-        Linking.openURL(deepUrl).catch(() => {});
-      } catch {}
+      launchEmergencyPopupOverlay(alertData).catch(() => {});
     })
     .on('broadcast', { event: 'loud_ping' }, async (event) => {
       const payload = event.payload;
@@ -1418,6 +1579,10 @@ export function listenForEmergencyAlerts(
       }
 
       const sender = payload.from_name || 'Family Circle';
+      if (shouldDeduplicateIncomingAlert('loud_ping', payload.from_user_id || sender)) {
+        return;
+      }
+
       triggerLoudPingNotification(sender);
 
       const alertData = {
@@ -1440,10 +1605,7 @@ export function listenForEmergencyAlerts(
 
       currentAlertCallbacks?.onLoudPing?.(sender);
 
-      try {
-        const deepUrl = `abucayguardian://emergency-alert?type=loud_ping&from=${encodeURIComponent(sender)}`;
-        Linking.openURL(deepUrl).catch(() => {});
-      } catch {}
+      launchEmergencyPopupOverlay(alertData).catch(() => {});
     })
     .on('broadcast', { event: 'checkin_request' }, async (event) => {
       const payload = event.payload;
@@ -1469,6 +1631,10 @@ export function listenForEmergencyAlerts(
       }
 
       const sender = payload.from_name || 'Family Circle';
+      if (shouldDeduplicateIncomingAlert('checkin', payload.from_user_id || sender)) {
+        return;
+      }
+
       sendSafetyCheckNotification(
         sender,
         payload.from_avatar,
@@ -1502,10 +1668,7 @@ export function listenForEmergencyAlerts(
         payload.from_lng
       );
 
-      try {
-        const deepUrl = `abucayguardian://emergency-alert?type=checkin&from=${encodeURIComponent(sender)}`;
-        Linking.openURL(deepUrl).catch(() => {});
-      } catch {}
+      launchEmergencyPopupOverlay(alertData).catch(() => {});
     })
     .on('broadcast', { event: 'checkin_reply' }, (event) => {
       const payload = event.payload;

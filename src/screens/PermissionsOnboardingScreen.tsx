@@ -21,6 +21,10 @@ import {
   isCovertAccessibilityEnabled,
   openCovertAccessibilitySettings,
 } from '../services/SilentSOSService';
+import {
+  isOverlayPermissionGranted,
+  isBatteryOptimizationIgnored,
+} from '../services/EmergencyAudioService';
 
 interface PermissionsOnboardingScreenProps {
   onComplete: () => void;
@@ -81,24 +85,32 @@ export default function PermissionsOnboardingScreen({
 
       // 4. Battery Optimization
       if (Platform.OS === 'android') {
+        let nativeBatteryOk = false;
         try {
-          const batteryOpt = require('react-native-battery-optimization-check');
-          if (batteryOpt && typeof batteryOpt.BatteryOptEnabled === 'function') {
-            const isOptEnabled = await batteryOpt.BatteryOptEnabled();
-            // If optimization is enabled, unrestricted background is FALSE; if disabled, background activity is TRUE
-            setBatteryGranted(!isOptEnabled);
-          }
+          nativeBatteryOk = await isBatteryOptimizationIgnored();
+          if (nativeBatteryOk) setBatteryGranted(true);
         } catch {}
+        if (!nativeBatteryOk) {
+          try {
+            const batteryOpt = require('react-native-battery-optimization-check');
+            if (batteryOpt && typeof batteryOpt.BatteryOptEnabled === 'function') {
+              const isOptEnabled = await batteryOpt.BatteryOptEnabled();
+              // If optimization is enabled, unrestricted background is FALSE; if disabled, background activity is TRUE
+              setBatteryGranted(!isOptEnabled);
+            }
+          } catch {}
+        }
       }
 
-      // 5, 6, 7. Load previously configured flags from storage
+      // 5, 6, 7. Check native overlay permission + saved flags
       try {
-        const [savedOverlay, savedPopups, savedFullScreen] = await Promise.all([
+        const [nativeOverlayOk, savedOverlay, savedPopups, savedFullScreen] = await Promise.all([
+          isOverlayPermissionGranted().catch(() => false),
           AsyncStorage.getItem('@abucay_perm_overlay'),
           AsyncStorage.getItem('@abucay_perm_popups'),
           AsyncStorage.getItem('@abucay_perm_fullscreen'),
         ]);
-        if (savedOverlay === 'true') setOverlayGranted(true);
+        setOverlayGranted(Platform.OS === 'android' ? nativeOverlayOk : savedOverlay === 'true');
         if (savedPopups === 'true') setPopupsGranted(true);
         if (savedFullScreen === 'true') setFullScreenGranted(true);
       } catch {}

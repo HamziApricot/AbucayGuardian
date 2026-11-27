@@ -125,98 +125,104 @@ serve(async (req) => {
       }
     }
     // ==============================================================
-    // PROVIDER 2: SEMAPHORE (Philippines Alternative)
+    // PROVIDER 2: SEMAPHORE (Philippines Alternative - Parallel Batch)
     // ==============================================================
     else if (semaphoreApiKey) {
       providerUsed = "semaphore";
-      for (const recipient of recipients) {
-        try {
-          const res = await fetch("https://api.semaphore.co/api/v4/messages", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              apikey: semaphoreApiKey,
-              number: recipient,
-              message: message,
-              sendername: semaphoreSenderName,
-            }),
-          });
-          const resData = await res.json();
-          if (res.ok) {
-            sentCount++;
-          } else {
-            errors.push({ recipient, error: JSON.stringify(resData) });
+      await Promise.allSettled(
+        recipients.map(async (recipient) => {
+          try {
+            const res = await fetch("https://api.semaphore.co/api/v4/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                apikey: semaphoreApiKey,
+                number: recipient,
+                message: message,
+                sendername: semaphoreSenderName,
+              }),
+            });
+            const resData = await res.json();
+            if (res.ok) {
+              sentCount++;
+            } else {
+              errors.push({ recipient, error: JSON.stringify(resData) });
+            }
+          } catch (err: any) {
+            errors.push({ recipient, error: err?.message || "Semaphore dispatch failed" });
           }
-        } catch (err: any) {
-          errors.push({ recipient, error: err?.message || "Semaphore dispatch failed" });
-        }
-      }
+        })
+      );
     }
     // ==============================================================
-    // PROVIDER 3: PHILSMS (Philippines Alternative)
+    // PROVIDER 3: PHILSMS (Philippines Alternative - Parallel Batch)
     // ==============================================================
     else if (philSmsToken) {
       providerUsed = "philsms";
-      for (const recipient of recipients) {
-        try {
-          const res = await fetch("https://dashboard.philsms.com/api/v3/sms/send", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${philSmsToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              recipient: recipient,
-              sender_id: philSmsSenderId,
-              type: "plain",
-              message: message,
-            }),
-          });
-          const resData = await res.json();
-          if (res.ok && resData.status !== "error") {
-            sentCount++;
-          } else {
-            errors.push({ recipient, error: JSON.stringify(resData) });
+      await Promise.allSettled(
+        recipients.map(async (recipient) => {
+          try {
+            const res = await fetch("https://dashboard.philsms.com/api/v3/sms/send", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${philSmsToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                recipient: recipient,
+                sender_id: philSmsSenderId,
+                type: "plain",
+                message: message,
+              }),
+            });
+            const resData = await res.json();
+            if (res.ok && resData.status !== "error") {
+              sentCount++;
+            } else {
+              errors.push({ recipient, error: JSON.stringify(resData) });
+            }
+          } catch (err: any) {
+            errors.push({ recipient, error: err?.message || "PhilSMS dispatch failed" });
           }
-        } catch (err: any) {
-          errors.push({ recipient, error: err?.message || "PhilSMS dispatch failed" });
-        }
-      }
+        })
+      );
     }
     // ==============================================================
-    // PROVIDER 4: TWILIO (Global Gateway)
+    // PROVIDER 4: TWILIO (Global Gateway - Parallel Batch)
     // ==============================================================
     else if (twilioAccountSid && twilioAuthToken && twilioPhoneNumber) {
       providerUsed = "twilio";
       const authHeader = "Basic " + btoa(`${twilioAccountSid}:${twilioAuthToken}`);
-      for (const recipient of recipients) {
-        try {
-          const formData = new URLSearchParams();
-          formData.append("To", recipient);
-          formData.append("From", twilioPhoneNumber);
-          formData.append("Body", message);
+      await Promise.allSettled(
+        recipients.map(async (recipient) => {
+          try {
+            const formData = new URLSearchParams();
+            formData.append("To", recipient);
+            formData.append("From", twilioPhoneNumber);
+            formData.append("Body", message);
 
-          const res = await fetch(
-            `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`,
-            {
-              method: "POST",
-              headers: {
-                "Authorization": authHeader,
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: formData.toString(),
+            const res = await fetch(
+              `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`,
+              {
+                method: "POST",
+                headers: {
+                  "Authorization": authHeader,
+                  "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: formData.toString(),
+              }
+            );
+            const resData = await res.json();
+            if (res.ok) {
+              sentCount++;
+            } else {
+              errors.push({ recipient, error: JSON.stringify(resData) });
             }
-          );
-          const resData = await res.json();
-          if (res.ok) {
-            sentCount++;
-          } else {
-            errors.push({ recipient, error: JSON.stringify(resData) });
+          } catch (err: any) {
+            errors.push({ recipient, error: err?.message || "Twilio dispatch failed" });
           }
-        } catch (err: any) {
-          errors.push({ recipient, error: err?.message || "Twilio dispatch failed" });
-        }
-      }
+        })
+      );
     }
     // ==============================================================
     // PROVIDER 5: CUSTOM SMS WEBHOOK URL

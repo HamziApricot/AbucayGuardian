@@ -83,12 +83,27 @@ class MainActivity : ReactActivity() {
     // @generated end expo-splashscreen
     super.onCreate(null)
     wakeUpScreen()
+    EmergencyPopupManager.handleLaunchIntent(this, intent)
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
     wakeUpScreen()
+    EmergencyPopupManager.handleLaunchIntent(this, intent)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    if (EmergencyPopupManager.hasPendingAlert()) {
+      wakeUpScreen()
+    }
+    EmergencyPopupManager.onActivityResumed(this)
+  }
+
+  override fun onPause() {
+    EmergencyPopupManager.onActivityPaused()
+    super.onPause()
   }
 
   private fun wakeUpScreen() {

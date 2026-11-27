@@ -45,6 +45,62 @@ const COOLDOWN_MS = 10_000; // 10-second cooldown lock to prevent accidental dou
 let isDispatching = false;
 let lastTriggerTime = 0;
 
+const GENERIC_NAMES = new Set(['family member', 'a family member', 'family circle', 'citizen guardian', 'unknown']);
+
+function pickRealName(...candidates: Array<string | null | undefined>): string | null {
+  for (const c of candidates) {
+    if (typeof c === 'string') {
+      const trimmed = c.trim();
+      if (trimmed.length > 0 && !GENERIC_NAMES.has(trimmed.toLowerCase())) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+}
+
+async function resolveSenderIdentity(
+  user: any,
+  cachedProfile: { id?: string; name?: string; phone?: string; avatar_url?: string } | null
+): Promise<{ senderName: string; senderPhone?: string; senderAvatar: string | null }> {
+  const profileRes = await withTimeout(
+    Promise.resolve(
+      supabase
+        .from('users')
+        .select('id, name, phone, avatar_url, pairing_code')
+        .eq('id', user.id)
+        .single()
+    ),
+    3000,
+    { data: null } as any
+  );
+
+  const live = profileRes?.data;
+  const senderPhone = (live?.phone || cachedProfile?.phone || user?.phone || '').trim() || undefined;
+  const senderAvatar = live?.avatar_url || cachedProfile?.avatar_url || null;
+
+  const resolvedName =
+    pickRealName(
+      live?.name,
+      cachedProfile?.name,
+      user?.user_metadata?.name,
+      user?.user_metadata?.full_name,
+      user?.user_metadata?.display_name
+    ) ||
+    senderPhone ||
+    'Family Member';
+
+  // Persist refreshed profile locally so future offline/headless triggers retain the real name
+  if (live && live.name && live.name.trim()) {
+    AsyncStorage.setItem(
+      CACHED_PROFILE_KEY,
+      JSON.stringify({ ...(cachedProfile || {}), ...live, id: live.id || user.id })
+    ).catch(() => {});
+  }
+
+  return { senderName: resolvedName, senderPhone, senderAvatar };
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(fallback), ms);
@@ -316,18 +372,8 @@ export async function triggerSilentSOS(
     lastTriggerTime = now;
     console.log(`[SilentSOSService] Dispatching covert SOS via ${triggerSource} for user ${user.id}`);
 
-    // 2. Fetch sender's profile (use cached profile immediately, race live DB query with 2s timeout)
-    const liveProfilePromise = withTimeout(
-      Promise.resolve(
-        supabase
-          .from('users')
-          .select('name, phone, avatar_url')
-          .eq('id', user.id)
-          .single()
-      ),
-      2000,
-      { data: null } as any
-    );
+    // 2. Fetch sender's identity, GPS, battery, and paired family IDs in parallel
+    const identityPromise = resolveSenderIdentity(user, cachedProfile);
 
     // 3. Fast bounded GPS acquisition (never blocks dispatch when minimized/locked/indoors)
     const gpsPromise = (async () => {
@@ -376,17 +422,14 @@ export async function triggerSilentSOS(
     const batteryPromise = withTimeout(getDeviceBatteryLevel(), 1000, null as number | null);
     const familyPromise = getPairedFamilyUserIds(user.id);
 
-    const [profileRes, coords, bat, targetFamilyUserIds] = await Promise.all([
-      liveProfilePromise,
+    const [identity, coords, bat, targetFamilyUserIds] = await Promise.all([
+      identityPromise,
       gpsPromise,
       batteryPromise,
       familyPromise,
     ]);
 
-    const userProfile = profileRes?.data || cachedProfile;
-    const senderName = userProfile?.name || user.user_metadata?.name || 'Family Member';
-    const senderPhone = userProfile?.phone || user.phone || undefined;
-    const senderAvatar = userProfile?.avatar_url || null;
+    const { senderName, senderPhone, senderAvatar } = identity;
     const batteryLevel: number | null = bat !== null && bat !== undefined && bat >= 0 ? bat : 0.8;
     const timestamp = new Date().toISOString();
 
@@ -584,13 +627,13 @@ export async function resolveSilentSOS(): Promise<boolean> {
     }
     if (!user) return false;
 
-    const { data: userProfile } = await supabase
-      .from('users')
-      .select('name')
-      .eq('id', user.id)
-      .single();
+    let cachedProfile: { id?: string; name?: string; phone?: string; avatar_url?: string } | null = null;
+    try {
+      const rawProfile = await AsyncStorage.getItem(CACHED_PROFILE_KEY);
+      if (rawProfile) cachedProfile = JSON.parse(rawProfile);
+    } catch {}
 
-    const senderName = userProfile?.name || user.user_metadata?.name || 'Family Member';
+    const { senderName } = await resolveSenderIdentity(user, cachedProfile);
 
     // 1. Mark active database records resolved
     await supabase

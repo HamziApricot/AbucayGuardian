@@ -215,6 +215,57 @@ export async function moveToBackground(): Promise<boolean> {
 }
 
 /**
+ * Brings MainActivity to the foreground from minimized/background state, or renders
+ * a native SYSTEM_ALERT_WINDOW overlay if Android/OEM blocks background Activity launch.
+ */
+export async function launchEmergencyPopupOverlay(alertData: Record<string, any>): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.launchEmergencyPopup !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.launchEmergencyPopup(JSON.stringify(alertData || {}));
+  } catch (err) {
+    console.warn('[EmergencyAudio] Failed to launch emergency popup:', err);
+    return false;
+  }
+}
+
+/**
+ * Dismisses any active native SYSTEM_ALERT_WINDOW emergency overlay.
+ */
+export async function dismissEmergencyPopupOverlay(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false;
+  if (!EmergencyAudio || typeof EmergencyAudio.dismissEmergencyPopup !== 'function') {
+    return false;
+  }
+  try {
+    return await EmergencyAudio.dismissEmergencyPopup();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Consumes any pending emergency alert queued natively while the app was minimized/launching.
+ */
+export async function consumePendingEmergencyAlert(): Promise<any | null> {
+  if (Platform.OS !== 'android') return null;
+  if (!EmergencyAudio || typeof EmergencyAudio.consumePendingEmergencyAlert !== 'function') {
+    return null;
+  }
+  try {
+    const raw = await EmergencyAudio.consumePendingEmergencyAlert();
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      return JSON.parse(raw);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Enables Android Screen Pinning / Lock Task (Kiosk) Mode.
  * Prevents the user from closing the app, swiping away, accessing the Home button,
  * or accessing System Settings to Force Stop the app.

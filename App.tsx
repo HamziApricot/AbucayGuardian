@@ -1,11 +1,14 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { StyleSheet, Animated, Image, Vibration, Linking, BackHandler, Platform } from 'react-native';
+import { StyleSheet, Animated, Image, Vibration, Linking, BackHandler, Platform, AppState, DeviceEventEmitter } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
+import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 import AppNavigator from './src/navigation/AppNavigator';
 import { AlertProvider, useAlert } from './src/context/AlertContext';
 import { AlertManager } from './src/components/AlertManager';
@@ -21,6 +24,12 @@ import {
     requestOverlayAndBatteryPermissions,
     registerPushToken,
     moveToBackground,
+    playEmergencyAlarmAudio,
+    launchEmergencyPopupOverlay,
+    consumePendingEmergencyAlert,
+    isEmergencyNotificationData,
+    normalizeEmergencyAlertData,
+    EMERGENCY_ALERT_NOTIFICATION_ID,
 } from './src/services/EmergencyNotificationService';
 import { startBackgroundLocationTracking, stopBackgroundLocationTracking } from './src/services/BackgroundLocationTask';
 import { LocationTrackingService } from './src/services/LocationTrackingService';
@@ -35,8 +44,10 @@ import { syncNativeCovertSOSState } from './src/services/SilentSOSService';
 function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     const fadeAnim = useRef(new Animated.Value(1)).current;
     const [hidden, setHidden] = useState(false);
+    const [imageReady, setImageReady] = useState(false);
 
     useEffect(() => {
+        if (!imageReady) return;
         const timer = setTimeout(() => {
             Animated.timing(fadeAnim, {
                 toValue: 0,
@@ -46,10 +57,19 @@ function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
                 setHidden(true);
                 onFinish();
             });
-        }, 1200);
+        }, 900);
 
         return () => clearTimeout(timer);
-    }, [fadeAnim, onFinish]);
+    }, [imageReady, fadeAnim, onFinish]);
+
+    // Safety timeout in case onLoad is delayed
+    useEffect(() => {
+        const safety = setTimeout(() => {
+            SplashScreen.hideAsync().catch(() => {});
+            setImageReady(true);
+        }, 1200);
+        return () => clearTimeout(safety);
+    }, []);
 
     if (hidden) return null;
 
@@ -63,8 +83,13 @@ function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
         >
             <Image
                 source={require('./assets/splash.png')}
-                style={StyleSheet.absoluteFill}
+                style={{ width: '100%', height: '100%' }}
                 resizeMode="cover"
+                fadeDuration={0}
+                onLoad={() => {
+                    SplashScreen.hideAsync().catch(() => {});
+                    setImageReady(true);
+                }}
             />
         </Animated.View>
     );
@@ -74,6 +99,8 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     const { user } = useAuth();
     const { showToast } = useAlert();
     const [activeNDRRMCAlert, setActiveNDRRMCAlert] = useState<NDRRMCEmergencyAlertData | null>(null);
+    const activeAlertRef = useRef<NDRRMCEmergencyAlertData | null>(null);
+    activeAlertRef.current = activeNDRRMCAlert;
 
     // Active Covert SOS Listeners: Hardware volume pattern & shake gesture
     useCovertShake();
@@ -89,6 +116,65 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             }
         });
 
+        // Sync any emergency alert queued natively while minimized or cold-launching
+        const syncPendingNativeAlert = async () => {
+            try {
+                const pending = await consumePendingEmergencyAlert();
+                if (pending) {
+                    const normalized = normalizeEmergencyAlertData(pending);
+                    if (normalized) {
+                        setActiveNDRRMCAlert(normalized);
+                        return;
+                    }
+                }
+            } catch { }
+
+            // Fallback: if brought to foreground while an emergency Notifee alert is displayed, open modal
+            if (!activeAlertRef.current) {
+                try {
+                    const notifee = require('@notifee/react-native').default;
+                    if (notifee && typeof notifee.getDisplayedNotifications === 'function') {
+                        const displayed = await notifee.getDisplayedNotifications();
+                        const match = Array.isArray(displayed)
+                            ? displayed.find((n: any) =>
+                                (n.id === EMERGENCY_ALERT_NOTIFICATION_ID || n.notification?.id === EMERGENCY_ALERT_NOTIFICATION_ID) &&
+                                isEmergencyNotificationData(n.notification?.data)
+                            )
+                            : null;
+                        if (match?.notification?.data) {
+                            const normalized = normalizeEmergencyAlertData(match.notification.data);
+                            if (normalized) {
+                                setActiveNDRRMCAlert(normalized);
+                            }
+                        }
+                    }
+                } catch { }
+            }
+        };
+
+        syncPendingNativeAlert();
+
+        const nativeAlertSub = DeviceEventEmitter.addListener('onNativeEmergencyAlert', (rawJson: string) => {
+            try {
+                const parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+                const normalized = normalizeEmergencyAlertData(parsed);
+                if (normalized) {
+                    setActiveNDRRMCAlert(normalized);
+                }
+            } catch { }
+        });
+
+        const nativeDismissSub = DeviceEventEmitter.addListener('onNativeEmergencyDismissed', () => {
+            setActiveNDRRMCAlert(null);
+            dismissEmergencyAlertNotifications().catch(() => { });
+        });
+
+        const appStateSub = AppState.addEventListener('change', (nextState) => {
+            if (nextState === 'active') {
+                syncPendingNativeAlert();
+            }
+        });
+
         // Deep Link listener for incoming emergency broadcasts & full-screen intents
         const handleIncomingUrl = (url?: string | null) => {
             if (!url) return;
@@ -98,15 +184,21 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                 const isSOS = url.includes('type=sos');
                 const matchSender = url.match(/[?&]from=([^&]+)/);
                 const sender = matchSender ? decodeURIComponent(matchSender[1]) : 'Family Circle';
-                setActiveNDRRMCAlert({
-                    alertType: isSOS ? 'sos' : isCheckIn ? 'checkin' : 'loud_ping',
-                    fromName: sender,
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                const nextType = isSOS ? 'sos' : isCheckIn ? 'checkin' : 'loud_ping';
+                setActiveNDRRMCAlert((prev) => {
+                    if (prev && prev.alertType === nextType && (prev.fromLat !== undefined || prev.fromPhone || prev.fromAvatar)) {
+                        return prev;
+                    }
+                    return {
+                        alertType: nextType,
+                        fromName: sender,
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    };
                 });
             }
         };
 
-        Linking.getInitialURL().then(handleIncomingUrl).catch(() => {});
+        Linking.getInitialURL().then(handleIncomingUrl).catch(() => { });
         const sub = Linking.addEventListener('url', ({ url }) => handleIncomingUrl(url));
 
         // Detect Notifee Full-Screen Intent launch over lock screen
@@ -115,36 +207,41 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             const notifee = require('@notifee/react-native').default;
             if (notifee && typeof notifee.getInitialNotification === 'function') {
                 notifee.getInitialNotification().then((initial: any) => {
-                    if (initial?.notification?.data) {
-                        const data = initial.notification.data;
-                        if (data.type === 'ndrrmc_alert' || data.type === 'loud_ping' || data.type === 'checkin' || data.type === 'sos' || data.emergencyId) {
-                            setActiveNDRRMCAlert({
-                                alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'checkin' ? 'checkin' : 'loud_ping'),
-                                fromName: data.fromName || data.senderName || data.memberName || 'Emergency Alert',
-                                fromLat: data.lat,
-                                fromLng: data.lng,
-                                battery: data.battery,
-                                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                            });
-                        }
+                    if (initial?.notification?.data && isEmergencyNotificationData(initial.notification.data)) {
+                        const normalized = normalizeEmergencyAlertData(initial.notification.data);
+                        if (normalized) setActiveNDRRMCAlert(normalized);
                     }
-                }).catch(() => {});
+                }).catch(() => { });
 
                 unsubNotifee = notifee.onForegroundEvent(async ({ type, detail }: any) => {
                     // Type 0 = DISMISSED: User explicitly swiped away or dismissed notification banner
                     if (type === 0) {
-                        dismissEmergencyAlertNotifications().catch(() => {});
+                        dismissEmergencyAlertNotifications().catch(() => { });
                         setActiveNDRRMCAlert(null);
                         return;
                     }
 
                     const data = detail?.notification?.data;
-                    const isEmergency = data && (data.type === 'ndrrmc_alert' || data.type === 'loud_ping' || data.type === 'checkin' || data.type === 'sos' || data.emergencyId);
+                    const isEmergency = isEmergencyNotificationData(data);
 
                     // Type 2 = ACTION_PRESS: User pressed one of the notification action buttons
                     if (type === 2) {
                         const actionId = detail?.pressAction?.id;
-                        dismissEmergencyAlertNotifications().catch(() => {});
+
+                        if (actionId === 'ACTION_SOS') {
+                            navigateToNotificationTarget('SOS');
+                            return;
+                        }
+                        if (actionId === 'ACTION_TRACKER') {
+                            navigateToNotificationTarget('Tracker');
+                            return;
+                        }
+                        if (actionId === 'ACTION_HOTLINES') {
+                            navigateToNotificationTarget('Hotlines');
+                            return;
+                        }
+
+                        dismissEmergencyAlertNotifications().catch(() => { });
 
                         if (actionId === 'mark_safe') {
                             setActiveNDRRMCAlert(null);
@@ -153,7 +250,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                                 try {
                                     await supabase.from('tracker').upsert({ user_id: user.id, updated_at: nowIso }, { onConflict: 'user_id' });
                                     await supabase.from('users').update({ updated_at: nowIso }).eq('id', user.id);
-                                } catch {}
+                                } catch { }
                                 await supabase.channel('family-broadcast').send({
                                     type: 'broadcast',
                                     event: 'checkin_reply',
@@ -183,72 +280,63 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
 
                         if (actionId === 'call_911') {
                             setActiveNDRRMCAlert(null);
-                            Linking.openURL('tel:911').catch(() => {});
+                            Linking.openURL('tel:911').catch(() => { });
                             return;
                         }
 
                         // Default action ("View Alert Box")
                         if (isEmergency) {
-                            setActiveNDRRMCAlert({
-                                alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'checkin' ? 'checkin' : 'loud_ping'),
-                                fromName: data.fromName || data.senderName || data.memberName || 'Emergency Alert',
-                                fromLat: data.lat,
-                                fromLng: data.lng,
-                                battery: data.battery,
-                                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                            });
+                            const normalized = normalizeEmergencyAlertData(data);
+                            if (normalized) setActiveNDRRMCAlert(normalized);
                         }
                         return;
                     }
 
                     // Type 1 = PRESS: User tapped the notification itself
                     if (type === 1) {
-                        dismissEmergencyAlertNotifications().catch(() => {});
+                        dismissEmergencyAlertNotifications().catch(() => { });
                         if (isEmergency) {
-                            setActiveNDRRMCAlert({
-                                alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'checkin' ? 'checkin' : 'loud_ping'),
-                                fromName: data.fromName || data.senderName || data.memberName || 'Emergency Alert',
-                                fromLat: data.lat,
-                                fromLng: data.lng,
-                                battery: data.battery,
-                                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                            });
+                            const normalized = normalizeEmergencyAlertData(data);
+                            if (normalized) setActiveNDRRMCAlert(normalized);
                         }
                         return;
                     }
 
-                    // Type 3 = DELIVERED: Incoming emergency alert in foreground
+                    // Type 3 = DELIVERED: Incoming emergency alert
                     if (type === 3 && isEmergency) {
-                        setActiveNDRRMCAlert({
-                            alertType: data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'checkin' ? 'checkin' : 'loud_ping'),
-                            fromName: data.fromName || data.senderName || data.memberName || 'Emergency Alert',
-                            fromLat: data.lat,
-                            fromLng: data.lng,
-                            battery: data.battery,
-                            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                        });
+                        const normalized = normalizeEmergencyAlertData(data);
+                        if (normalized) {
+                            setActiveNDRRMCAlert(normalized);
+                            if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+                                launchEmergencyPopupOverlay(normalized).catch(() => { });
+                            }
+                        }
                     }
                 });
             }
-        } catch {}
+        } catch { }
 
-        // Expo foreground notification listener (ensures popup screen triggers for Expo-delivered notifications)
+        // Expo foreground/background notification listener (ensures popup screen triggers for Expo/FCM push alerts)
         const expoSub = Notifications.addNotificationReceivedListener((notification) => {
             const data = (notification.request.content.data || {}) as any;
-            if (data && (data.type === 'ndrrmc_alert' || data.type === 'loud_ping' || data.type === 'checkin' || data.type === 'sos' || data.emergencyId)) {
-                setActiveNDRRMCAlert({
-                    alertType: (data.alertType || (data.type === 'sos' ? 'sos' : data.type === 'checkin' ? 'checkin' : 'loud_ping')) as 'sos' | 'checkin' | 'loud_ping',
-                    fromName: String(data.fromName || data.senderName || data.memberName || 'Emergency Alert'),
-                    fromLat: typeof data.lat === 'number' ? data.lat : undefined,
-                    fromLng: typeof data.lng === 'number' ? data.lng : undefined,
-                    battery: typeof data.battery === 'number' ? data.battery : null,
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                });
+            if (isEmergencyNotificationData(data)) {
+                const normalized = normalizeEmergencyAlertData(data);
+                if (normalized) {
+                    setActiveNDRRMCAlert(normalized);
+                    if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+                        const isLoud = normalized.alertType === 'sos' || normalized.alertType === 'loud_ping';
+                        playEmergencyAlarmAudio(isLoud ? 'alert' : 'notif', normalized.alertType === 'sos').catch(() => { });
+                        launchEmergencyPopupOverlay(normalized).catch(() => { });
+                    }
+                }
             }
         });
 
         return () => {
             registerNDRRMCModalHandler(null);
+            nativeAlertSub.remove();
+            nativeDismissSub.remove();
+            appStateSub.remove();
             sub.remove();
             expoSub.remove();
             if (unsubNotifee) unsubNotifee();
@@ -265,7 +353,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
 
             // On root screens: Prevent app destruction. Minimize to background cleanly.
             if (Platform.OS === 'android') {
-                moveToBackground().catch(() => {});
+                moveToBackground().catch(() => { });
                 return true; // Blocks default OS exit
             }
 
@@ -399,7 +487,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                             low_power_mode: lowPowerMode,
                             updated_at: nowIso,
                         },
-                    }).catch(() => {});
+                    }).catch(() => { });
                 } else {
                     await supabase.from('users').update({ updated_at: nowIso }).eq('id', user.id);
                 }
@@ -433,7 +521,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                         try {
                             await supabase.from('tracker').upsert({ user_id: user.id, updated_at: nowIso }, { onConflict: 'user_id' });
                             await supabase.from('users').update({ updated_at: nowIso }).eq('id', user.id);
-                        } catch {}
+                        } catch { }
                         await supabase.channel('family-broadcast').send({
                             type: 'broadcast',
                             event: 'checkin_reply',
@@ -446,22 +534,22 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                         });
                     }
                     setActiveNDRRMCAlert(null);
-                    dismissEmergencyAlertNotifications().catch(() => {});
+                    dismissEmergencyAlertNotifications().catch(() => { });
                     showToast({ message: '✅ Marked as safe on the family map!', type: 'success' });
                 }}
                 onTriggerSOS={() => {
                     setActiveNDRRMCAlert(null);
-                    dismissEmergencyAlertNotifications().catch(() => {});
+                    dismissEmergencyAlertNotifications().catch(() => { });
                     navigateToNotificationTarget('SOS');
                 }}
                 onViewTracker={() => {
                     setActiveNDRRMCAlert(null);
-                    dismissEmergencyAlertNotifications().catch(() => {});
+                    dismissEmergencyAlertNotifications().catch(() => { });
                     navigateToNotificationTarget('Tracker');
                 }}
                 onDismiss={() => {
                     setActiveNDRRMCAlert(null);
-                    dismissEmergencyAlertNotifications().catch(() => {});
+                    dismissEmergencyAlertNotifications().catch(() => { });
                 }}
             />
         </>

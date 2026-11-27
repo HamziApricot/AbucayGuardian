@@ -28,12 +28,19 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
         @Volatile
         private var activeReactContext: ReactApplicationContext? = null
 
+        @Volatile
+        private var activeModuleInstance: EmergencyAudioModule? = null
+
         fun emitCovertVolumeEvent(): Boolean {
+            return emitNativeEvent("onCovertVolumeSOS", null)
+        }
+
+        fun emitNativeEvent(eventName: String, payload: Any?): Boolean {
             val ctx = activeReactContext ?: return false
             return try {
                 if (ctx.hasActiveReactInstance()) {
                     ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-                        .emit("onCovertVolumeSOS", null)
+                        .emit(eventName, payload)
                     true
                 } else {
                     false
@@ -42,10 +49,17 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
                 false
             }
         }
+
+        fun stopActiveAlarm() {
+            try {
+                activeModuleInstance?.stopAlarmInternal()
+            } catch (_: Throwable) {}
+        }
     }
 
     init {
         activeReactContext = reactContext
+        activeModuleInstance = this
     }
 
     private var mediaPlayer: MediaPlayer? = null
@@ -285,6 +299,45 @@ class EmergencyAudioModule(reactContext: ReactApplicationContext) :
             promise.resolve(false)
         } catch (e: Exception) {
             promise.reject("MOVE_BACK_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Brings MainActivity to the foreground from minimized/background state, or renders
+     * a native SYSTEM_ALERT_WINDOW emergency overlay if the OS blocks background launches.
+     */
+    @ReactMethod
+    fun launchEmergencyPopup(alertJson: String, promise: Promise) {
+        try {
+            EmergencyPopupManager.launchEmergencyAlert(reactApplicationContext, alertJson)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("LAUNCH_POPUP_ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Dismisses any visible native SYSTEM_ALERT_WINDOW emergency overlay and clears pending alert state.
+     */
+    @ReactMethod
+    fun dismissEmergencyPopup(promise: Promise) {
+        try {
+            EmergencyPopupManager.dismissAll(reactApplicationContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    /**
+     * Returns and clears any pending emergency alert JSON queued before JS resumed or mounted.
+     */
+    @ReactMethod
+    fun consumePendingEmergencyAlert(promise: Promise) {
+        try {
+            promise.resolve(EmergencyPopupManager.consumePendingAlertJson())
+        } catch (_: Exception) {
+            promise.resolve(null)
         }
     }
 

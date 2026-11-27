@@ -15,22 +15,55 @@ AppRegistry.registerHeadlessTask('SilentSOSTask', () => async (taskData) => {
   }
 });
 
-// Headless background handler for Android (App-Kill scenario)
+// Headless background handler for Android (Minimized / App-Kill scenario)
 try {
   const notifee = require('@notifee/react-native').default;
   if (notifee && typeof notifee.onBackgroundEvent === 'function') {
     notifee.onBackgroundEvent(async ({ type, detail }) => {
       console.log('[Notifee HeadlessTask] Background event:', type, detail?.pressAction?.id);
-      try {
-        const { stopEmergencyAlarmAudio } = require('./src/services/EmergencyAudioService');
-        await stopEmergencyAlarmAudio();
-      } catch {}
-      try {
-        const notifId = detail?.notification?.id;
-        if (notifId && notifId !== 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL') {
-          await notifee.cancelNotification(notifId);
+      const data = detail?.notification?.data;
+
+      // Type 3 = DELIVERED while minimized/background: play siren & open emergency popup/overlay
+      if (type === 3 && data) {
+        try {
+          const {
+            isEmergencyNotificationData,
+            normalizeEmergencyAlertData,
+            playEmergencyAlarmAudio,
+            launchEmergencyPopupOverlay,
+          } = require('./src/services/EmergencyNotificationService');
+
+          if (isEmergencyNotificationData(data)) {
+            const alertData = normalizeEmergencyAlertData(data);
+            if (alertData) {
+              const isLoud = alertData.alertType === 'sos' || alertData.alertType === 'loud_ping';
+              playEmergencyAlarmAudio(isLoud ? 'alert' : 'notif', alertData.alertType === 'sos').catch(() => {});
+              await launchEmergencyPopupOverlay(alertData);
+            }
+          }
+        } catch (err) {
+          console.warn('[Notifee HeadlessTask] Background popup launch error:', err);
         }
-      } catch {}
+        return;
+      }
+
+      // Dismissed or action pressed: silence alarm, clear overlay & cancel non-persistent notification
+      if (type === 0 || type === 2) {
+        try {
+          const {
+            stopEmergencyAlarmAudio,
+            dismissEmergencyPopupOverlay,
+          } = require('./src/services/EmergencyAudioService');
+          await dismissEmergencyPopupOverlay();
+          await stopEmergencyAlarmAudio();
+        } catch {}
+        try {
+          const notifId = detail?.notification?.id;
+          if (notifId && notifId !== 'ABUCAY_GUARDIAN_PERSISTENT_CONTROL') {
+            await notifee.cancelNotification(notifId);
+          }
+        } catch {}
+      }
     });
   }
 } catch (e) {

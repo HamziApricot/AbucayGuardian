@@ -12,6 +12,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.module.annotations.ReactModule
+import java.util.concurrent.Executors
 
 @ReactModule(name = DirectSMSModule.NAME)
 class DirectSMSModule(reactContext: ReactApplicationContext) :
@@ -19,15 +20,17 @@ class DirectSMSModule(reactContext: ReactApplicationContext) :
 
     companion object {
         const val NAME = "DirectSMS"
+        private val smsExecutor = Executors.newSingleThreadExecutor()
     }
 
     override fun getName(): String = NAME
 
+    @Suppress("DEPRECATION")
     private fun getSmsManager(): SmsManager {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             reactApplicationContext.getSystemService(SmsManager::class.java)
+                ?: SmsManager.getDefault()
         } else {
-            @Suppress("DEPRECATION")
             SmsManager.getDefault()
         }
     }
@@ -71,27 +74,45 @@ class DirectSMSModule(reactContext: ReactApplicationContext) :
                 return
             }
 
-            val smsManager = getSmsManager()
-            val parts = smsManager.divideMessage(message)
-
-            var successCount = 0
+            // Copy and deduplicate numbers on the caller thread before dispatching asynchronously
+            val recipients = LinkedHashSet<String>()
             for (i in 0 until phoneNumbers.size()) {
-                val phone = phoneNumbers.getString(i)
-                if (!phone.isNullOrBlank()) {
-                    try {
-                        if (parts.size > 1) {
-                            smsManager.sendMultipartTextMessage(phone, null, parts, null, null)
-                        } else {
-                            smsManager.sendTextMessage(phone, null, message, null, null)
-                        }
-                        successCount++
-                    } catch (err: Exception) {
-                        // Individual message send error, continue with remaining recipients
-                    }
+                val phone = phoneNumbers.getString(i)?.trim()
+                if (!phone.isNullOrEmpty()) {
+                    recipients.add(phone)
                 }
             }
 
-            promise.resolve(successCount)
+            if (recipients.isEmpty()) {
+                promise.resolve(0)
+                return
+            }
+
+            // Dispatch individual 1-on-1 SMS messages (never a group MMS thread) in one native batch
+            smsExecutor.execute {
+                try {
+                    val smsManager = getSmsManager()
+                    val parts = smsManager.divideMessage(message)
+                    var successCount = 0
+
+                    for (phone in recipients) {
+                        try {
+                            if (parts.size > 1) {
+                                smsManager.sendMultipartTextMessage(phone, null, parts, null, null)
+                            } else {
+                                smsManager.sendTextMessage(phone, null, message, null, null)
+                            }
+                            successCount++
+                        } catch (_: Exception) {
+                            // Individual message send error, continue queuing remaining recipients
+                        }
+                    }
+
+                    promise.resolve(successCount)
+                } catch (e: Exception) {
+                    promise.reject("SMS_FAILED", e.message, e)
+                }
+            }
         } catch (e: Exception) {
             promise.reject("SMS_FAILED", e.message, e)
         }

@@ -814,12 +814,21 @@ export default function FamilyTrackerScreen() {
                     Vibration.vibrate([0, 500, 200, 500, 200, 500]);
                 } catch {}
 
+                const matchedSender = familyLocations.find(
+                    (m) => m.member_user_id === payload.from_user_id || m.id === payload.from_user_id
+                );
+                const rawFromName = typeof payload.from_name === 'string' ? payload.from_name.trim() : '';
+                const isGenericName = !rawFromName || /^(a )?family (member|circle)$/i.test(rawFromName);
+                const resolvedSenderName = !isGenericName
+                    ? rawFromName
+                    : (matchedSender?.name || 'Family Member');
+
                 const incomingAlert: ActiveSOSDanger = {
                     id: payload.from_user_id,
                     userId: payload.from_user_id,
-                    name: payload.from_name || 'Family Member',
-                    phone: payload.from_phone || null,
-                    avatarUrl: payload.from_avatar || null,
+                    name: resolvedSenderName,
+                    phone: payload.from_phone || matchedSender?.phone || null,
+                    avatarUrl: payload.from_avatar || matchedSender?.avatar_url || null,
                     lat: payload.lat,
                     lng: payload.lng,
                     battery: payload.battery !== undefined ? payload.battery : null,
@@ -855,7 +864,7 @@ export default function FamilyTrackerScreen() {
                 }
 
                 showToast({
-                    message: `🚨 ${payload.from_name || 'A family member'} sent an SOS alert!`,
+                    message: `🚨 ${resolvedSenderName} sent an SOS alert!`,
                     type: 'error',
                 });
             })

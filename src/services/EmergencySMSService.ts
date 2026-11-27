@@ -57,6 +57,25 @@ interface DispatchMetadata {
   silent?: boolean;
 }
 
+const NETINFO_TIMEOUT_MS = 600;
+const CONTACTS_FETCH_TIMEOUT_MS = 1500;
+const GATEWAY_TIMEOUT_MS = 4500;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
+}
+
 /**
  * Persist or retrieve custom TextBee SMS API credentials
  */
@@ -224,16 +243,35 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
     console.warn('[EmergencySMSService] Error reading cached family contacts:', e);
   }
 
-  // 2. Query Supabase for real-time family members if online and userId is available
+  // 2. Query Supabase for real-time family members in parallel with a short timeout
+  //    so slow/flaky mobile data never stalls SOS SMS dispatch.
   if (userId) {
     try {
-      // A. Direct family members added by this user (including joined users profile)
-      const { data: directMembers, error: directErr } = await supabase
-        .from('family_members')
-        .select('id, name, phone, relationship, member_user_id, member:users!member_user_id(id, name, phone)')
-        .eq('user_id', userId);
+      const [directRes, recipRes] = await Promise.all([
+        withTimeout(
+          Promise.resolve(
+            supabase
+              .from('family_members')
+              .select('id, name, phone, relationship, member_user_id, member:users!member_user_id(id, name, phone)')
+              .eq('user_id', userId)
+          ),
+          CONTACTS_FETCH_TIMEOUT_MS,
+          { data: null, error: null } as any
+        ),
+        withTimeout(
+          Promise.resolve(
+            supabase
+              .from('family_members')
+              .select('id, user_id, name, phone, relationship, creator:users!user_id(id, name, phone)')
+              .eq('member_user_id', userId)
+          ),
+          CONTACTS_FETCH_TIMEOUT_MS,
+          { data: null, error: null } as any
+        ),
+      ]);
 
-      if (!directErr && directMembers && Array.isArray(directMembers)) {
+      const directMembers = directRes?.data;
+      if (!directRes?.error && Array.isArray(directMembers)) {
         for (const m of directMembers) {
           if (m.member_user_id === userId) continue;
           const rawPhone = (m as any).member?.phone || m.phone;
@@ -244,13 +282,8 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
         }
       }
 
-      // B. Reciprocal family members (where current user was added by someone else)
-      const { data: reciprocalMembers, error: recipErr } = await supabase
-        .from('family_members')
-        .select('id, user_id, name, phone, relationship, creator:users!user_id(id, name, phone)')
-        .eq('member_user_id', userId);
-
-      if (!recipErr && reciprocalMembers && Array.isArray(reciprocalMembers)) {
+      const reciprocalMembers = recipRes?.data;
+      if (!recipRes?.error && Array.isArray(reciprocalMembers)) {
         for (const rm of reciprocalMembers) {
           if (rm.user_id === userId) continue;
           const rawPhone = (rm as any).creator?.phone || rm.phone;
@@ -269,7 +302,8 @@ export async function getEmergencyFamilyContacts(userId?: string): Promise<Emerg
 }
 
 /**
- * Builds the standard emergency SOS SMS body with vital life-saving details.
+ * Builds the standard emergency SOS SMS body in compact single-segment GSM-7 format
+ * (<=160 chars when possible) so cellular SIM radio sends 2x faster to 10+ recipients.
  */
 export function buildEmergencySOSMessage(params: {
   senderName: string;
@@ -281,28 +315,24 @@ export function buildEmergencySOSMessage(params: {
 }): string {
   const time = params.timestamp || new Date();
   const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
 
-  let batteryText = '';
+  let batPart = '';
   if (params.battery !== undefined && params.battery !== null && params.battery >= 0) {
     const pct = Math.round(params.battery > 1 ? params.battery : params.battery * 100);
-    batteryText = `Battery: ${pct}%\n`;
+    batPart = `Bat: ${pct}% | `;
   }
 
   let locationText = 'GPS: Pending\n';
   if (params.lat !== undefined && params.lng !== undefined) {
-    const latFormatted = params.lat.toFixed(5);
-    const lngFormatted = params.lng.toFixed(5);
-    locationText = `GPS: ${latFormatted}, ${lngFormatted}\n`;
+    locationText = `GPS: ${params.lat.toFixed(5)}, ${params.lng.toFixed(5)}\n`;
   }
 
   return (
-    `EMERGENCY SOS! ${params.senderName} is in distress and needs urgent help!\n\n` +
+    `SOS! ${params.senderName} needs urgent help!\n` +
     locationText +
-    batteryText +
-    `Time: ${dateStr} ${timeStr}\n\n` +
-    `Please call them or 911 immediately!\n` +
-    `- Abucay Guardian`
+    `${batPart}${timeStr}\n` +
+    `Call them or 911 now.\n` +
+    `-AbucayGuardian`
   );
 }
 
@@ -404,11 +434,11 @@ async function dispatchSMSToRecipients(
     };
   }
 
-  // Check network connectivity
+  // Check network connectivity (bounded so NetInfo never stalls dispatch)
   let isOnline = false;
   try {
-    const netState = await NetInfo.fetch();
-    isOnline = Boolean(netState.isConnected && netState.isInternetReachable !== false);
+    const netState = await withTimeout(NetInfo.fetch(), NETINFO_TIMEOUT_MS, null as any);
+    isOnline = Boolean(netState?.isConnected && netState?.isInternetReachable !== false);
   } catch (netErr) {
     console.warn('[EmergencySMSService] NetInfo check failed:', netErr);
   }
@@ -418,25 +448,29 @@ async function dispatchSMSToRecipients(
 
   // ==============================================================
   // 1. PRIMARY: SMS GATEWAY VIA SUPABASE EDGE FUNCTION (send-sms-hook)
-  // Uses your deployed Edge Function and SMS Gateway credentials (0 load needed)
+  // Sends individual SMS to all recipients in a single instant batch (0 load needed)
   // ==============================================================
   if (isOnline) {
-    console.log(`[EmergencySMSService] Online: Attempting SMS Gateway dispatch via send-sms-hook for ${uniquePhones.length} recipient(s)...`);
+    console.log(`[EmergencySMSService] Online: Attempting batch SMS Gateway dispatch via send-sms-hook for ${uniquePhones.length} recipient(s)...`);
 
     let hookSentCount = 0;
     try {
-      // Dispatch all recipients in a single unified instant batch to SMS Gate
-      const { data, error } = await supabase.functions.invoke('send-sms-hook', {
-        body: {
-          recipients: uniquePhones,
-          phoneNumbers: uniquePhones,
-          phone: uniquePhones[0],
-          user: { phone: uniquePhones[0] },
-          sms: { otp: message, message: message },
-          message: message,
-          simNumber: 2,
-        },
-      });
+      const invokeRes = await withTimeout(
+        supabase.functions.invoke('send-sms-hook', {
+          body: {
+            recipients: uniquePhones,
+            phoneNumbers: uniquePhones,
+            phone: uniquePhones[0],
+            user: { phone: uniquePhones[0] },
+            sms: { otp: message, message: message },
+            message: message,
+            simNumber: 2,
+          },
+        }),
+        GATEWAY_TIMEOUT_MS,
+        { data: null, error: { message: 'SMS gateway timeout' } } as any
+      );
+      const { data, error } = invokeRes || {};
 
       const isSuccess = !error && Boolean(data?.success || data?.data?.success || data?.data?.data?.success || (data && !data?.error));
       if (isSuccess) {
@@ -451,9 +485,9 @@ async function dispatchSMSToRecipients(
       fallbackReason = hookErr?.message || 'send-sms-hook invocation error';
     }
 
-    // Also record dispatch in emergency_sms_dispatches table for history
-    try {
-      await supabase.from('emergency_sms_dispatches').insert(
+    // Record dispatch asynchronously (fire-and-forget) so logging never delays SMS fallback or UI
+    Promise.resolve(
+      supabase.from('emergency_sms_dispatches').insert(
         uniquePhones.map((phone, idx) => ({
           sender_id: metadata?.senderId || null,
           sender_name: metadata?.senderName || 'Family Member',
@@ -465,10 +499,10 @@ async function dispatchSMSToRecipients(
           status: hookSentCount > 0 ? 'sent' : 'failed',
           provider: 'smsgate_edge_function',
         }))
-      );
-    } catch (logErr) {
+      )
+    ).catch((logErr) => {
       console.warn('[EmergencySMSService] Dispatch log write error:', logErr);
-    }
+    });
 
     if (hookSentCount > 0) {
       console.log(`[EmergencySMSService] Successfully delivered ${hookSentCount}/${uniquePhones.length} SMS via send-sms-hook`);
@@ -485,6 +519,8 @@ async function dispatchSMSToRecipients(
 
     // Secondary fallback: Direct TextBee API if custom key is provided
     if (tbConfig.apiKey && tbConfig.apiKey.trim().length > 0) {
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const abortTimer = controller ? setTimeout(() => controller.abort(), GATEWAY_TIMEOUT_MS) : null;
       try {
         console.log('[EmergencySMSService] Attempting direct TextBee API webhook fallback...');
         const headers: Record<string, string> = {
@@ -504,6 +540,7 @@ async function dispatchSMSToRecipients(
           method: 'POST',
           headers,
           body: JSON.stringify(bodyPayload),
+          ...(controller ? { signal: controller.signal } : {}),
         });
 
         const tbData = await tbRes.json().catch(() => ({}));
@@ -522,6 +559,8 @@ async function dispatchSMSToRecipients(
         fallbackReason = tbData?.message || tbData?.error || `TextBee API returned HTTP ${tbRes.status}`;
       } catch (tbErr: any) {
         fallbackReason = tbErr?.message || 'Direct TextBee webhook request failed';
+      } finally {
+        if (abortTimer) clearTimeout(abortTimer);
       }
     }
   } else {
@@ -531,6 +570,7 @@ async function dispatchSMSToRecipients(
 
   // ==============================================================
   // 2. FALLBACK: NATIVE DEVICE CELLULAR SMS (No Internet Needed, Uses SIM Radio)
+  // Batched in a single native call (queues individual 1-on-1 SMS, never a group MMS)
   // ==============================================================
   if (Platform.OS === 'android' && NativeModules?.DirectSMS) {
     // In silent/headless/locked mode we MUST never call PermissionsAndroid.request (no foreground Activity)
@@ -540,16 +580,14 @@ async function dispatchSMSToRecipients(
     if (hasPermission) {
       try {
         let sentCount = 0;
-        // Transmit individual messages (never create a group MMS/SMS thread)
-        for (let i = 0; i < uniquePhones.length; i++) {
-          const phone = uniquePhones[i];
-          try {
-            await NativeModules.DirectSMS.sendDirectSMS(phone, message);
-            sentCount++;
-            console.log(`[EmergencySMSService] Direct cellular SMS delivered to individual recipient ${phone}`);
-          } catch (individualErr) {
-            console.warn(`[EmergencySMSService] Direct cellular SMS to ${phone} failed:`, individualErr);
-          }
+        if (typeof NativeModules.DirectSMS.sendDirectSMSToMultiple === 'function') {
+          sentCount = await NativeModules.DirectSMS.sendDirectSMSToMultiple(uniquePhones, message);
+          console.log(`[EmergencySMSService] Batch cellular SMS queued for ${sentCount}/${uniquePhones.length} individual recipients`);
+        } else {
+          const results = await Promise.allSettled(
+            uniquePhones.map((phone) => NativeModules.DirectSMS.sendDirectSMS(phone, message))
+          );
+          sentCount = results.filter((r) => r.status === 'fulfilled').length;
         }
 
         if (sentCount > 0) {
@@ -623,7 +661,6 @@ async function dispatchSMSToRecipients(
 export async function sendEmergencySMSToFamily(
   params: SendEmergencySMSParams
 ): Promise<SendEmergencySMSResult> {
-  const contacts = await getEmergencyFamilyContacts(params.senderId);
   const normalizedSenderPhone = params.senderPhone ? normalizePhoneNumber(params.senderPhone) : null;
 
   let targetPhones: string[] = [];
@@ -633,12 +670,16 @@ export async function sendEmergencySMSToFamily(
     for (let i = 0; i < params.customRecipients.length; i++) {
       const raw = params.customRecipients[i];
       const norm = normalizePhoneNumber(raw);
-      if (norm && (!normalizedSenderPhone || norm !== normalizedSenderPhone)) {
+      if (norm && (!normalizedSenderPhone || norm !== normalizedSenderPhone) && !targetPhones.includes(norm)) {
         targetPhones.push(norm);
         recipientNames.push(params.customRecipientNames?.[i] || 'Family Member');
       }
     }
-  } else {
+  }
+
+  let contacts: EmergencyContact[] = [];
+  if (targetPhones.length === 0) {
+    contacts = await getEmergencyFamilyContacts(params.senderId);
     for (const c of contacts) {
       if (!c.phone) continue;
       const normPhone = normalizePhoneNumber(c.phone);
@@ -659,6 +700,9 @@ export async function sendEmergencySMSToFamily(
   if (targetPhones.length === 0) {
     // If other members were not found or sender's number was the only contact on record,
     // fallback to all registered contacts or sender phone so SOS alerts and testing always dispatch:
+    if (contacts.length === 0) {
+      contacts = await getEmergencyFamilyContacts(params.senderId);
+    }
     if (contacts.length > 0) {
       for (const c of contacts) {
         if (!c.phone) continue;
