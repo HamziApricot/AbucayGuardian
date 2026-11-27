@@ -1,20 +1,24 @@
 import { useEffect, useRef } from 'react';
+import { NativeModules, Platform } from 'react-native';
 import { Accelerometer } from 'expo-sensors';
 import { triggerSilentSOS } from '../services/SilentSOSService';
 
 /**
  * Covert Shake Gesture Hook:
- * Samples the device accelerometer at 20 Hz (50ms interval).
- * Detects deliberate multi-shake motion:
- * - Magnitude sqrt(x^2 + y^2 + z^2) > 2.7 G
- * - Minimum spacing of >= 180ms between peaks (to avoid counting a single swing multiple times)
- * - 3 spikes within a 1.5s sliding window triggers triggerSilentSOS('shake')
+ * On Android builds with CovertSOS native service, 24/7 shake detection runs natively
+ * in CovertSOSService (works in foreground, minimized, and screen-locked states).
+ * On iOS or Expo Go without the native CovertSOS module, falls back to JS Accelerometer polling at 20 Hz.
  */
 export function useCovertShake() {
   const peakTimestamps = useRef<number[]>([]);
   const lastPeakTime = useRef<number>(0);
 
   useEffect(() => {
+    if (Platform.OS === 'android' && NativeModules?.CovertSOS?.syncSettings) {
+      // Native CovertSOSService handles accelerometer shake detection 24/7
+      return;
+    }
+
     Accelerometer.setUpdateInterval(50); // 20 Hz polling rate
 
     const subscription = Accelerometer.addListener(({ x, y, z }) => {

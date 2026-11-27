@@ -1,3 +1,4 @@
+import { NativeModules, Platform, DeviceEventEmitter } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
@@ -23,6 +24,10 @@ export interface ActiveSilentSOSStatus {
   lng: number;
 }
 
+export interface TriggerSilentSOSOptions {
+  waitForRefinement?: boolean;
+}
+
 export const DEFAULT_COVERT_SETTINGS: CovertSettings = {
   secretPin: '911911',
   shakeEnabled: true,
@@ -32,10 +37,98 @@ export const DEFAULT_COVERT_SETTINGS: CovertSettings = {
 
 const STORAGE_KEY_SETTINGS = '@abucay_covert_sos_settings';
 const STORAGE_KEY_ACTIVE_SOS = '@abucay_active_silent_sos_status';
+const CACHED_PROFILE_KEY = '@abucay_cached_user_profile';
+const CACHED_FAMILY_KEY = '@abucay_cached_family_members';
+const BACKGROUND_USER_ID_KEY = 'ABUCAY_BACKGROUND_USER_ID';
 const COOLDOWN_MS = 10_000; // 10-second cooldown lock to prevent accidental double-firing
 
 let isDispatching = false;
 let lastTriggerTime = 0;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(fallback);
+      });
+  });
+}
+
+/**
+ * Mirrors covert SOS settings and auth state into Android SharedPreferences
+ * and starts/updates the 24/7 CovertSOSService foreground monitor.
+ */
+export async function syncNativeCovertSOSState(
+  userId?: string | null,
+  overrideSettings?: CovertSettings
+): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeModules?.CovertSOS?.syncSettings) {
+    return false;
+  }
+
+  try {
+    let resolvedUserId = userId;
+    if (resolvedUserId === undefined) {
+      const { data } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      resolvedUserId = data?.session?.user?.id ?? null;
+      if (!resolvedUserId) {
+        resolvedUserId = await AsyncStorage.getItem(BACKGROUND_USER_ID_KEY).catch(() => null);
+      }
+    }
+
+    const settings = overrideSettings ?? (await getCovertSettings());
+    await NativeModules.CovertSOS.syncSettings(
+      Boolean(resolvedUserId),
+      resolvedUserId || null,
+      Boolean(settings.shakeEnabled),
+      Boolean(settings.volumePatternEnabled),
+      Boolean(settings.weatherTapEnabled)
+    );
+    return true;
+  } catch (e) {
+    console.warn('[SilentSOSService] Failed to sync native covert state:', e);
+    return false;
+  }
+}
+
+export async function isNativeCovertServiceRunning(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeModules?.CovertSOS?.isServiceRunning) {
+    return false;
+  }
+  try {
+    return await NativeModules.CovertSOS.isServiceRunning();
+  } catch {
+    return false;
+  }
+}
+
+export async function isCovertAccessibilityEnabled(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeModules?.CovertSOS?.isAccessibilityServiceEnabled) {
+    return false;
+  }
+  try {
+    return await NativeModules.CovertSOS.isAccessibilityServiceEnabled();
+  } catch {
+    return false;
+  }
+}
+
+export async function openCovertAccessibilitySettings(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !NativeModules?.CovertSOS?.openAccessibilitySettings) {
+    return false;
+  }
+  try {
+    return await NativeModules.CovertSOS.openAccessibilitySettings();
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Retrieves the user's covert SOS settings from persistent storage.
@@ -53,13 +146,14 @@ export async function getCovertSettings(): Promise<CovertSettings> {
 }
 
 /**
- * Saves updated covert SOS settings.
+ * Saves updated covert SOS settings and updates the Android background service.
  */
 export async function saveCovertSettings(settings: Partial<CovertSettings>): Promise<CovertSettings> {
   try {
     const current = await getCovertSettings();
     const updated = { ...current, ...settings };
     await AsyncStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(updated));
+    await syncNativeCovertSOSState(undefined, updated);
     return updated;
   } catch (e) {
     console.warn('[SilentSOSService] Failed to save covert settings:', e);
@@ -82,40 +176,69 @@ export async function getActiveSilentSOSStatus(): Promise<ActiveSilentSOSStatus 
 }
 
 /**
- * Helper to fetch all paired family user IDs (both direct and reciprocal links).
+ * Helper to fetch all paired family user IDs (both direct and reciprocal links),
+ * falling back to locally cached family members when offline.
  */
 async function getPairedFamilyUserIds(userId: string): Promise<string[]> {
   const idSet = new Set<string>();
-  try {
-    const { data: direct } = await supabase
-      .from('family_members')
-      .select('member_user_id')
-      .eq('user_id', userId)
-      .not('member_user_id', 'is', null);
 
-    if (direct) {
-      direct.forEach((row: any) => {
-        if (row.member_user_id && row.member_user_id !== userId) {
-          idSet.add(row.member_user_id);
+  // 1. Seed from local cache instantly (works offline & in locked background)
+  try {
+    const cachedRaw = await AsyncStorage.getItem(CACHED_FAMILY_KEY);
+    if (cachedRaw) {
+      const parsed = JSON.parse(cachedRaw);
+      if (Array.isArray(parsed)) {
+        for (const row of parsed) {
+          const candidate = row?.member_user_id && row.member_user_id !== userId
+            ? row.member_user_id
+            : row?.user_id && row.user_id !== userId
+            ? row.user_id
+            : null;
+          if (candidate) idSet.add(candidate);
         }
-      });
+      }
     }
   } catch {}
 
-  try {
-    const { data: reverse } = await supabase
-      .from('family_members')
-      .select('user_id')
-      .eq('member_user_id', userId);
+  // 2. Refresh from Supabase in parallel with a short timeout
+  const [directRes, reverseRes] = await Promise.all([
+    withTimeout(
+      Promise.resolve(
+        supabase
+          .from('family_members')
+          .select('member_user_id')
+          .eq('user_id', userId)
+          .not('member_user_id', 'is', null)
+      ),
+      2500,
+      { data: null } as any
+    ),
+    withTimeout(
+      Promise.resolve(
+        supabase
+          .from('family_members')
+          .select('user_id')
+          .eq('member_user_id', userId)
+      ),
+      2500,
+      { data: null } as any
+    ),
+  ]);
 
-    if (reverse) {
-      reverse.forEach((row: any) => {
-        if (row.user_id && row.user_id !== userId) {
-          idSet.add(row.user_id);
-        }
-      });
-    }
-  } catch {}
+  if (Array.isArray(directRes?.data)) {
+    directRes.data.forEach((row: any) => {
+      if (row.member_user_id && row.member_user_id !== userId) {
+        idSet.add(row.member_user_id);
+      }
+    });
+  }
+  if (Array.isArray(reverseRes?.data)) {
+    reverseRes.data.forEach((row: any) => {
+      if (row.user_id && row.user_id !== userId) {
+        idSet.add(row.user_id);
+      }
+    });
+  }
 
   return Array.from(idSet);
 }
@@ -124,11 +247,14 @@ async function getPairedFamilyUserIds(userId: string): Promise<string[]> {
  * Triggers a completely silent, stealth emergency SOS:
  * 1. ZERO audio playback, ZERO vibration (never calls Vibration.vibrate).
  * 2. ZERO confirmation modals, snackbars, or toasts on the sender's device.
- * 3. Instant GPS fallback (getLastKnownPositionAsync / cached location first, then live balanced lock).
- * 4. Inserts active SOS event in Supabase sos_events, updates tracker/users, broadcasts over Realtime, and sends Push/SMS.
+ * 3. Instant GPS fallback (cached location + timed lastKnown/live lock so background never hangs).
+ * 4. Concurrently inserts active SOS event in Supabase sos_events, updates tracker/users, broadcasts over Realtime, and sends Push/SMS.
  * 5. Fails completely silently without showing any error dialog if offline or restricted.
  */
-export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'manual'): Promise<boolean> {
+export async function triggerSilentSOS(
+  triggerSource: CovertTriggerSource = 'manual',
+  options?: TriggerSilentSOSOptions
+): Promise<boolean> {
   const now = Date.now();
   if (isDispatching || now - lastTriggerTime < COOLDOWN_MS) {
     console.log(`[SilentSOSService] Skipped (${triggerSource}) - cooldown or already dispatching`);
@@ -144,7 +270,7 @@ export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'man
     if (triggerSource === 'volume' && !settings.volumePatternEnabled) return false;
     if (triggerSource === 'weather' && !settings.weatherTapEnabled) return false;
 
-    // 1. Get current authenticated user (fast local session first so offline works instantly)
+    // 1. Get current authenticated user (fast local session first, then cached profile fallback for offline)
     let user: any = null;
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -152,8 +278,33 @@ export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'man
     } catch {}
 
     if (!user) {
-      const { data: userData } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
-      user = userData?.user ?? null;
+      const userRes = await withTimeout(
+        supabase.auth.getUser(),
+        2000,
+        { data: { user: null } } as any
+      );
+      user = userRes?.data?.user ?? null;
+    }
+
+    let cachedProfile: { id?: string; name?: string; phone?: string; avatar_url?: string } | null = null;
+    try {
+      const rawProfile = await AsyncStorage.getItem(CACHED_PROFILE_KEY);
+      if (rawProfile) {
+        cachedProfile = JSON.parse(rawProfile);
+      }
+    } catch {}
+
+    if (!user) {
+      const fallbackUserId =
+        cachedProfile?.id ||
+        (await AsyncStorage.getItem(BACKGROUND_USER_ID_KEY).catch(() => null));
+      if (fallbackUserId) {
+        user = {
+          id: fallbackUserId,
+          phone: cachedProfile?.phone,
+          user_metadata: { name: cachedProfile?.name },
+        };
+      }
     }
 
     if (!user) {
@@ -165,80 +316,92 @@ export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'man
     lastTriggerTime = now;
     console.log(`[SilentSOSService] Dispatching covert SOS via ${triggerSource} for user ${user.id}`);
 
-    // 2. Fetch sender's profile from the 'users' table (NOT 'profiles')
-    let userProfile: { name?: string; phone?: string; avatar_url?: string } | null = null;
-    try {
-      const { data } = await supabase
-        .from('users')
-        .select('name, phone, avatar_url')
-        .eq('id', user.id)
-        .single();
-      userProfile = data;
-    } catch {}
+    // 2. Fetch sender's profile (use cached profile immediately, race live DB query with 2s timeout)
+    const liveProfilePromise = withTimeout(
+      Promise.resolve(
+        supabase
+          .from('users')
+          .select('name, phone, avatar_url')
+          .eq('id', user.id)
+          .single()
+      ),
+      2000,
+      { data: null } as any
+    );
 
+    // 3. Fast bounded GPS acquisition (never blocks dispatch when minimized/locked/indoors)
+    const gpsPromise = (async () => {
+      let resolvedCoords: { latitude: number; longitude: number } = {
+        latitude: 14.7275,
+        longitude: 120.5378,
+      };
+      try {
+        const cached = await getLastKnownLocation();
+        if (cached?.lat && cached?.lng) {
+          resolvedCoords = { latitude: cached.lat, longitude: cached.lng };
+        }
+
+        const lastKnown = await withTimeout(
+          Location.getLastKnownPositionAsync(),
+          1500,
+          null as Location.LocationObject | null
+        );
+        if (lastKnown?.coords) {
+          resolvedCoords = {
+            latitude: lastKnown.coords.latitude,
+            longitude: lastKnown.coords.longitude,
+          };
+          saveLastKnownLocation({ lat: resolvedCoords.latitude, lng: resolvedCoords.longitude }).catch(() => {});
+        } else {
+          const currentLoc = await withTimeout(
+            Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            }),
+            2500,
+            null as Location.LocationObject | null
+          );
+          if (currentLoc?.coords) {
+            resolvedCoords = {
+              latitude: currentLoc.coords.latitude,
+              longitude: currentLoc.coords.longitude,
+            };
+            saveLastKnownLocation({ lat: resolvedCoords.latitude, lng: resolvedCoords.longitude }).catch(() => {});
+          }
+        }
+      } catch {}
+      return resolvedCoords;
+    })();
+
+    // 4. Device battery level + paired family IDs in parallel
+    const batteryPromise = withTimeout(getDeviceBatteryLevel(), 1000, null as number | null);
+    const familyPromise = getPairedFamilyUserIds(user.id);
+
+    const [profileRes, coords, bat, targetFamilyUserIds] = await Promise.all([
+      liveProfilePromise,
+      gpsPromise,
+      batteryPromise,
+      familyPromise,
+    ]);
+
+    const userProfile = profileRes?.data || cachedProfile;
     const senderName = userProfile?.name || user.user_metadata?.name || 'Family Member';
     const senderPhone = userProfile?.phone || user.phone || undefined;
     const senderAvatar = userProfile?.avatar_url || null;
-
-    // 3. Fast GPS acquisition: check last known position & local cache first for sub-second dispatch
-    let coords: { latitude: number; longitude: number } = {
-      latitude: 14.7275,
-      longitude: 120.5378,
-    };
-
-    try {
-      const cached = await getLastKnownLocation();
-      if (cached?.lat && cached?.lng) {
-        coords = { latitude: cached.lat, longitude: cached.lng };
-      }
-
-      const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown?.coords) {
-        coords = {
-          latitude: lastKnown.coords.latitude,
-          longitude: lastKnown.coords.longitude,
-        };
-        saveLastKnownLocation({ lat: coords.latitude, lng: coords.longitude }).catch(() => {});
-      } else {
-        const currentLoc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        coords = {
-          latitude: currentLoc.coords.latitude,
-          longitude: currentLoc.coords.longitude,
-        };
-        saveLastKnownLocation({ lat: coords.latitude, lng: coords.longitude }).catch(() => {});
-      }
-    } catch {
-      // Keep cached/fallback coords if location service is restricted
-    }
-
-    // 4. Device battery level
-    let batteryLevel: number | null = 0.8;
-    try {
-      const bat = await getDeviceBatteryLevel();
-      if (bat !== null && bat !== undefined && bat >= 0) {
-        batteryLevel = bat;
-      }
-    } catch {}
-
-    // 5. Query all paired family members (both direct and reverse links)
-    const targetFamilyUserIds = await getPairedFamilyUserIds(user.id);
+    const batteryLevel: number | null = bat !== null && bat !== undefined && bat >= 0 ? bat : 0.8;
     const timestamp = new Date().toISOString();
 
     // Persist local active status for discreet verification inside hidden settings
-    AsyncStorage.setItem(
-      STORAGE_KEY_ACTIVE_SOS,
-      JSON.stringify({
-        active: true,
-        source: triggerSource,
-        triggeredAt: timestamp,
-        lat: coords.latitude,
-        lng: coords.longitude,
-      })
-    ).catch(() => {});
+    const activeStatus: ActiveSilentSOSStatus = {
+      active: true,
+      source: triggerSource,
+      triggeredAt: timestamp,
+      lat: coords.latitude,
+      lng: coords.longitude,
+    };
+    await AsyncStorage.setItem(STORAGE_KEY_ACTIVE_SOS, JSON.stringify(activeStatus)).catch(() => {});
+    DeviceEventEmitter.emit('onSilentSOSDispatched', activeStatus);
 
-    // 6. Record active SOS event in database using exact schema columns (user_id, lat, lng, triggered_at, status)
+    // 5. Record active SOS event, update live coords, broadcast Realtime, send Push & send Silent SMS in parallel
     const sosRow = {
       user_id: user.id,
       lat: coords.latitude,
@@ -247,63 +410,67 @@ export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'man
       status: 'active',
     };
 
-    try {
-      const { error: sosError } = await supabase.from('sos_events').insert(sosRow);
-      if (sosError) {
-        console.warn('[SilentSOSService] sos_events insert failed, queuing offline:', sosError.message);
-        await queueSOSEvent(sosRow);
+    const insertSOSTask = async () => {
+      try {
+        const { error: sosError } = await supabase.from('sos_events').insert(sosRow);
+        if (sosError) {
+          console.warn('[SilentSOSService] sos_events insert failed, queuing offline:', sosError.message);
+          await queueSOSEvent(sosRow);
+        }
+      } catch {
+        await queueSOSEvent(sosRow).catch(() => {});
       }
-    } catch {
-      await queueSOSEvent(sosRow).catch(() => {});
-    }
+    };
 
-    // Sync tracker & users table so live map coordinates update right away
-    try {
-      await supabase
-        .from('tracker')
-        .upsert(
-          {
-            user_id: user.id,
+    const syncLocationTask = async () => {
+      try {
+        await Promise.allSettled([
+          supabase.from('tracker').upsert(
+            {
+              user_id: user.id,
+              lat: coords.latitude,
+              lng: coords.longitude,
+              battery: batteryLevel,
+              updated_at: timestamp,
+            },
+            { onConflict: 'user_id' }
+          ),
+          supabase
+            .from('users')
+            .update({
+              lat: coords.latitude,
+              lng: coords.longitude,
+              updated_at: timestamp,
+            })
+            .eq('id', user.id),
+        ]);
+      } catch {}
+    };
+
+    const broadcastTask = async () => {
+      try {
+        await supabase.channel('family-broadcast').send({
+          type: 'broadcast',
+          event: 'sos_alert',
+          payload: {
+            from_user_id: user.id,
+            from_name: senderName,
+            from_avatar: senderAvatar,
+            from_phone: senderPhone || null,
             lat: coords.latitude,
             lng: coords.longitude,
             battery: batteryLevel,
-            updated_at: timestamp,
+            silent: true,
+            source: triggerSource,
+            target_family_user_ids: targetFamilyUserIds,
+            triggered_at: timestamp,
           },
-          { onConflict: 'user_id' }
-        );
-      await supabase
-        .from('users')
-        .update({
-          lat: coords.latitude,
-          lng: coords.longitude,
-          updated_at: timestamp,
-        })
-        .eq('id', user.id);
-    } catch {}
+        });
+      } catch {}
+    };
 
-    // 7. Broadcast over Supabase Realtime channel to active family screens
-    try {
-      await supabase.channel('family-broadcast').send({
-        type: 'broadcast',
-        event: 'sos_alert',
-        payload: {
-          from_user_id: user.id,
-          from_name: senderName,
-          from_avatar: senderAvatar,
-          from_phone: senderPhone || null,
-          lat: coords.latitude,
-          lng: coords.longitude,
-          battery: batteryLevel,
-          silent: true,
-          source: triggerSource,
-          target_family_user_ids: targetFamilyUserIds,
-          triggered_at: timestamp,
-        },
-      });
-    } catch {}
-
-    // 8. Dispatch Push Notifications to wake family phones and locked screens
-    if (targetFamilyUserIds.length > 0) {
+    const pushTask = async () => {
+      if (targetFamilyUserIds.length === 0) return;
       try {
         await sendEmergencyPushNotification(
           targetFamilyUserIds,
@@ -316,52 +483,80 @@ export async function triggerSilentSOS(triggerSource: CovertTriggerSource = 'man
           batteryLevel
         );
       } catch {}
-    }
+    };
 
-    // 9. Dispatch Background Emergency SMS (silent: true guarantees Messages composer UI NEVER opens)
-    try {
-      await sendEmergencySMSToFamily({
-        senderName,
-        senderPhone,
-        senderId: user.id,
-        lat: coords.latitude,
-        lng: coords.longitude,
-        battery: batteryLevel,
-        alertType: 'sos',
-        silent: true,
-      });
-    } catch {}
-
-    // 10. Refine GPS coordinates in background 3 seconds later if initially low accuracy
-    setTimeout(async () => {
+    const smsTask = async () => {
       try {
-        const refined = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
+        await sendEmergencySMSToFamily({
+          senderName,
+          senderPhone,
+          senderId: user.id,
+          lat: coords.latitude,
+          lng: coords.longitude,
+          battery: batteryLevel,
+          alertType: 'sos',
+          silent: true,
         });
-        if (refined?.coords) {
-          await supabase
-            .from('sos_events')
-            .update({
-              lat: refined.coords.latitude,
-              lng: refined.coords.longitude,
-            })
-            .eq('user_id', user.id)
-            .eq('status', 'active');
+      } catch {}
+    };
 
-          await supabase
-            .from('tracker')
-            .upsert(
-              {
-                user_id: user.id,
+    await Promise.allSettled([
+      insertSOSTask(),
+      syncLocationTask(),
+      broadcastTask(),
+      pushTask(),
+      smsTask(),
+    ]);
+
+    // 6. Refine GPS coordinates 3 seconds later if initially low accuracy
+    const runRefinement = async () => {
+      try {
+        const refined = await withTimeout(
+          Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.High,
+          }),
+          4000,
+          null as Location.LocationObject | null
+        );
+        if (refined?.coords) {
+          saveLastKnownLocation({
+            lat: refined.coords.latitude,
+            lng: refined.coords.longitude,
+          }).catch(() => {});
+
+          await Promise.allSettled([
+            supabase
+              .from('sos_events')
+              .update({
                 lat: refined.coords.latitude,
                 lng: refined.coords.longitude,
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: 'user_id' }
-            );
+              })
+              .eq('user_id', user.id)
+              .eq('status', 'active'),
+            supabase
+              .from('tracker')
+              .upsert(
+                {
+                  user_id: user.id,
+                  lat: refined.coords.latitude,
+                  lng: refined.coords.longitude,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: 'user_id' }
+              ),
+          ]);
         }
       } catch {}
-    }, 3000);
+    };
+
+    if (options?.waitForRefinement) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await runRefinement();
+    } else {
+      setTimeout(() => {
+        runRefinement();
+      }, 3000);
+    }
 
     return true;
   } catch (err) {

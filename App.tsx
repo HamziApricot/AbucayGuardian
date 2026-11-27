@@ -30,6 +30,7 @@ import { supabase } from './src/lib/supabase';
 import './src/services/BackgroundLocationTask';
 import { useCovertShake } from './src/hooks/useCovertShake';
 import { useCovertVolume } from './src/hooks/useCovertVolume';
+import { syncNativeCovertSOSState } from './src/services/SilentSOSService';
 
 function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -277,12 +278,14 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         if (!user?.id) {
+            syncNativeCovertSOSState(null);
             dismissGuardianQuickActionsNotification();
             stopEmergencyAlertMonitoring();
             stopBackgroundLocationTracking();
             LocationTrackingService.stop();
             return;
         }
+        syncNativeCovertSOSState(user.id);
         showGuardianQuickActionsNotification();
         requestOverlayAndBatteryPermissions();
         registerPushToken(user.id);

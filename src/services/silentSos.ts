@@ -4,8 +4,13 @@ export {
   getCovertSettings,
   saveCovertSettings,
   getActiveSilentSOSStatus,
+  syncNativeCovertSOSState,
+  isNativeCovertServiceRunning,
+  isCovertAccessibilityEnabled,
+  openCovertAccessibilitySettings,
   DEFAULT_COVERT_SETTINGS,
   type CovertSettings,
   type CovertTriggerSource,
   type ActiveSilentSOSStatus,
+  type TriggerSilentSOSOptions,
 } from './SilentSOSService';

@@ -9,7 +9,8 @@ class EmergencyAudioPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
         return listOf(
             EmergencyAudioModule(reactContext),
-            DirectSMSModule(reactContext)
+            DirectSMSModule(reactContext),
+            CovertSOSModule(reactContext)
         )
     }
 

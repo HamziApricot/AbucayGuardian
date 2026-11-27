@@ -17,6 +17,10 @@ import * as Notifications from 'expo-notifications';
 import * as Location from 'expo-location';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Colors, Spacing, BorderRadius, Fonts } from '../constants/theme';
+import {
+  isCovertAccessibilityEnabled,
+  openCovertAccessibilitySettings,
+} from '../services/SilentSOSService';
 
 interface PermissionsOnboardingScreenProps {
   onComplete: () => void;
@@ -38,6 +42,7 @@ export default function PermissionsOnboardingScreen({
   const [overlayGranted, setOverlayGranted] = useState(false);
   const [popupsGranted, setPopupsGranted] = useState(false);
   const [fullScreenGranted, setFullScreenGranted] = useState(false);
+  const [covertAccessibilityGranted, setCovertAccessibilityGranted] = useState(false);
 
   // Check current permission statuses
   const checkAllPermissions = async () => {
@@ -97,6 +102,11 @@ export default function PermissionsOnboardingScreen({
         if (savedPopups === 'true') setPopupsGranted(true);
         if (savedFullScreen === 'true') setFullScreenGranted(true);
       } catch {}
+
+      if (Platform.OS === 'android') {
+        const hasAcc = await isCovertAccessibilityEnabled().catch(() => false);
+        setCovertAccessibilityGranted(hasAcc);
+      }
     } catch (e) {
       // Non-blocking
     }
@@ -693,6 +703,40 @@ export default function PermissionsOnboardingScreen({
             </Text>
           </TouchableOpacity>
         </View>
+
+        {/* 8. Lock-Screen Covert Volume SOS (Accessibility) */}
+        {Platform.OS === 'android' && (
+          <View style={styles.card}>
+            <View style={[styles.iconCircle, { backgroundColor: '#ECFDF5' }]}>
+              <Ionicons name="shield-half" size={22} color="#059669" />
+            </View>
+            <View style={styles.cardBody}>
+              <View style={styles.tagRow}>
+                <Text style={styles.cardTitle}>8. Lock-Screen Volume SOS</Text>
+                <View style={[styles.subBadge, { backgroundColor: '#D1FAE5' }]}>
+                  <Text style={[styles.subBadgeText, { color: '#047857' }]}>Accessibility</Text>
+                </View>
+              </View>
+              <Text style={styles.cardDesc}>
+                Optional: Enable "Abucay Guardian Covert Volume SOS" in Accessibility so UP-UP-DOWN-UP works even when the screen is locked or volume is at 0%/100%.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: '#059669' }, covertAccessibilityGranted && styles.actionBtnDone]}
+              onPress={() => openCovertAccessibilitySettings()}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={covertAccessibilityGranted ? 'checkmark-circle' : 'open-outline'}
+                size={17}
+                color={covertAccessibilityGranted ? '#16A34A' : '#FFFFFF'}
+              />
+              <Text style={[styles.actionBtnText, covertAccessibilityGranted && styles.actionBtnDoneText]}>
+                {covertAccessibilityGranted ? 'Enabled' : 'Open'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
 
       {/* Sticky Bottom Action Bar */}

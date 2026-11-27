@@ -1,7 +1,19 @@
 import { registerRootComponent } from 'expo';
+import { AppRegistry } from 'react-native';
 import './src/services/BackgroundLocationTask';
 import { getBackgroundGeolocation } from './src/services/LocationTrackingService';
 import App from './App';
+
+// Headless background task for Silent SOS (works when app is minimized, locked, or killed)
+AppRegistry.registerHeadlessTask('SilentSOSTask', () => async (taskData) => {
+  try {
+    const source = taskData?.source || 'manual';
+    const { triggerSilentSOS } = require('./src/services/SilentSOSService');
+    await triggerSilentSOS(source, { waitForRefinement: true });
+  } catch (e) {
+    console.warn('[SilentSOSTask] Headless execution error:', e);
+  }
+});
 
 // Headless background handler for Android (App-Kill scenario)
 try {

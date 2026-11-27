@@ -21,20 +21,23 @@ import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
   // Covert volume pattern state: UP -> UP -> DOWN -> UP within 4.0 seconds
-  private val keyTimestamps = mutableListOf<Long>()
-  private val keySequence = mutableListOf<Int>()
+  private val volumeMatcher = VolumePatternMatcher()
   private var suppressNextUpKeyCode: Int? = null
-  private val TARGET_PATTERN = listOf(
-    KeyEvent.KEYCODE_VOLUME_UP,
-    KeyEvent.KEYCODE_VOLUME_UP,
-    KeyEvent.KEYCODE_VOLUME_DOWN,
-    KeyEvent.KEYCODE_VOLUME_UP
-  )
-  private val PATTERN_WINDOW_MS = 4000L
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
     val keyCode = event.keyCode
     if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+      // Let AccessibilityService handle hardware keys globally without double-counting when enabled
+      if (CovertVolumeAccessibilityService.isRunning) {
+        return super.dispatchKeyEvent(event)
+      }
+
+      if (!CovertSOSPreferences.isLoggedIn(this) || !CovertSOSPreferences.isVolumePatternEnabled(this)) {
+        volumeMatcher.reset()
+        suppressNextUpKeyCode = null
+        return super.dispatchKeyEvent(event)
+      }
+
       // Consume the key-up event matching our suppressed final trigger press
       if (event.action == KeyEvent.ACTION_UP && suppressNextUpKeyCode == keyCode) {
         suppressNextUpKeyCode = null
@@ -43,23 +46,12 @@ class MainActivity : ReactActivity() {
 
       // Only count fresh physical presses (ignore key-hold auto-repeats)
       if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-        val now = System.currentTimeMillis()
-        while (keyTimestamps.isNotEmpty() && (now - keyTimestamps.first()) > PATTERN_WINDOW_MS) {
-          keyTimestamps.removeAt(0)
-          keySequence.removeAt(0)
-        }
-        keyTimestamps.add(now)
-        keySequence.add(keyCode)
-
-        if (keySequence.size >= TARGET_PATTERN.size) {
-          val tail = keySequence.takeLast(TARGET_PATTERN.size)
-          if (tail == TARGET_PATTERN) {
-            keyTimestamps.clear()
-            keySequence.clear()
-            suppressNextUpKeyCode = keyCode
+        if (volumeMatcher.recordPress(keyCode)) {
+          suppressNextUpKeyCode = keyCode
+          if (!CovertSOSDispatcher.dispatchCovertSOS(this, "volume")) {
             emitCovertVolumeEvent()
-            return true // Consumes the event to suppress the Android system volume slider HUD
           }
+          return true // Consumes the event to suppress the Android system volume slider HUD
         }
       }
     }

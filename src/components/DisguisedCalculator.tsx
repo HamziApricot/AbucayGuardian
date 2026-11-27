@@ -9,6 +9,8 @@ import {
   Switch,
   ScrollView,
   Platform,
+  DeviceEventEmitter,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +20,9 @@ import {
   getCovertSettings,
   saveCovertSettings,
   getActiveSilentSOSStatus,
+  isNativeCovertServiceRunning,
+  isCovertAccessibilityEnabled,
+  openCovertAccessibilitySettings,
   type CovertSettings,
   type ActiveSilentSOSStatus,
   DEFAULT_COVERT_SETTINGS,
@@ -185,6 +190,13 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
   const [allClearStatus, setAllClearStatus] = useState<string | null>(null);
   const [isResolving, setIsResolving] = useState(false);
   const [activeSosInfo, setActiveSosInfo] = useState<ActiveSilentSOSStatus | null>(null);
+  const [bgServiceActive, setBgServiceActive] = useState(false);
+  const [accessibilityEnabled, setAccessibilityEnabled] = useState(false);
+
+  const refreshNativeStatus = () => {
+    isNativeCovertServiceRunning().then(setBgServiceActive).catch(() => {});
+    isCovertAccessibilityEnabled().then(setAccessibilityEnabled).catch(() => {});
+  };
 
   const { display, handlePress, refreshSettings } = useCovertCalculator(() => {
     setTimeout(() => {
@@ -198,6 +210,22 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
       setPinInput(s.secretPin);
     });
     getActiveSilentSOSStatus().then(setActiveSosInfo);
+    refreshNativeStatus();
+
+    const sosSub = DeviceEventEmitter.addListener('onSilentSOSDispatched', (status: ActiveSilentSOSStatus) => {
+      setActiveSosInfo(status);
+    });
+    const appSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        getActiveSilentSOSStatus().then(setActiveSosInfo);
+        refreshNativeStatus();
+      }
+    });
+
+    return () => {
+      sosSub.remove();
+      appSub.remove();
+    };
   }, []);
 
   const openSettings = () => {
@@ -206,6 +234,7 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
       setPinInput(s.secretPin);
       setActiveSosInfo(sosStatus);
       setAllClearStatus(null);
+      refreshNativeStatus();
       setShowSettingsModal(true);
     });
   };
@@ -476,6 +505,41 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
                   />
                 </View>
               </View>
+
+              {/* Background & Lock-Screen Readiness */}
+              {Platform.OS === 'android' && (
+                <View style={styles.cardSection}>
+                  <Text style={styles.sectionHeader}>MINIMIZED & LOCK-SCREEN PROTECTION</Text>
+                  <Text style={styles.sectionDesc}>
+                    {bgServiceActive
+                      ? '🟢 24/7 Background Monitor Active: 3x Shake works even when minimized or screen-locked, and Volume Sequence works when minimized.'
+                      : '🟡 Background Monitor starting... Keep battery set to Unrestricted.'}
+                  </Text>
+                  <TouchableOpacity
+                    style={[
+                      styles.allClearBtn,
+                      {
+                        backgroundColor: accessibilityEnabled ? '#065F46' : '#2563EB',
+                        marginTop: 4,
+                      },
+                    ]}
+                    onPress={() => openCovertAccessibilitySettings()}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name={accessibilityEnabled ? 'lock-open' : 'key'}
+                      size={16}
+                      color="#FFFFFF"
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={styles.allClearBtnText}>
+                      {accessibilityEnabled
+                        ? 'Lock-Screen Volume Trigger Enabled'
+                        : 'Enable Lock-Screen Volume Trigger'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </ScrollView>
 
             <View style={styles.modalFooter}>

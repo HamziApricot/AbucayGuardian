@@ -533,7 +533,10 @@ async function dispatchSMSToRecipients(
   // 2. FALLBACK: NATIVE DEVICE CELLULAR SMS (No Internet Needed, Uses SIM Radio)
   // ==============================================================
   if (Platform.OS === 'android' && NativeModules?.DirectSMS) {
-    const hasPermission = await requestSMSPermissionIfNeeded();
+    // In silent/headless/locked mode we MUST never call PermissionsAndroid.request (no foreground Activity)
+    const hasPermission = metadata?.silent
+      ? await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.SEND_SMS).catch(() => false)
+      : await requestSMSPermissionIfNeeded();
     if (hasPermission) {
       try {
         let sentCount = 0;

@@ -38,3 +38,6 @@
     public static <fields>;
 }
 
+# App Native Modules, Covert SOS Services & Receivers
+-keep class com.abucay.guardian.** { *; }
+
