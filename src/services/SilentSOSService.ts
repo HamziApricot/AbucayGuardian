@@ -7,7 +7,7 @@ import { sendEmergencyPushNotification } from './EmergencyNotificationService';
 import { sendEmergencySMSToFamily } from './EmergencySMSService';
 import { queueSOSEvent, getLastKnownLocation, saveLastKnownLocation } from '../utils/cache';
 
-export type CovertTriggerSource = 'calculator' | 'weather' | 'volume' | 'manual';
+export type CovertTriggerSource = 'calculator' | 'weather' | 'volume' | 'crash' | 'manual';
 
 export interface CovertSettings {
   secretPin: string;
@@ -25,6 +25,12 @@ export interface ActiveSilentSOSStatus {
 
 export interface TriggerSilentSOSOptions {
   waitForRefinement?: boolean;
+  crashTelemetry?: {
+    lat?: number;
+    lng?: number;
+    speedKmh?: number;
+    gForce?: number;
+  };
 }
 
 export const DEFAULT_COVERT_SETTINGS: CovertSettings = {
@@ -143,6 +149,13 @@ export async function syncNativeCovertSOSState(
       Boolean(settings.volumePatternEnabled),
       Boolean(settings.weatherTapEnabled)
     );
+    if (NativeModules?.CrashDetection?.syncCrashDetection) {
+      const { getCrashDetectionEnabled } = require('./CrashDetectionService');
+      const crashEnabled = await getCrashDetectionEnabled().catch(() => true);
+      await NativeModules.CrashDetection.syncCrashDetection(
+        Boolean(resolvedUserId) && Boolean(crashEnabled)
+      ).catch(() => {});
+    }
     return true;
   } catch (e) {
     console.warn('[SilentSOSService] Failed to sync native covert state:', e);
@@ -371,16 +384,18 @@ export async function triggerSilentSOS(
     // 2. Fetch sender's identity, GPS, battery, and paired family IDs in parallel
     const identityPromise = resolveSenderIdentity(user, cachedProfile);
 
-    // 3. Fast bounded GPS acquisition (never blocks dispatch when minimized/locked/indoors)
+    // 3. Fast bounded GPS acquisition (prefers crash telemetry or cached fix so background never hangs)
     const gpsPromise = (async () => {
       let resolvedCoords: { latitude: number; longitude: number } = {
-        latitude: 14.7275,
-        longitude: 120.5378,
+        latitude: options?.crashTelemetry?.lat ?? 14.7275,
+        longitude: options?.crashTelemetry?.lng ?? 120.5378,
       };
       try {
-        const cached = await getLastKnownLocation();
-        if (cached?.lat && cached?.lng) {
-          resolvedCoords = { latitude: cached.lat, longitude: cached.lng };
+        if (!options?.crashTelemetry?.lat || !options?.crashTelemetry?.lng) {
+          const cached = await getLastKnownLocation();
+          if (cached?.lat && cached?.lng) {
+            resolvedCoords = { latitude: cached.lat, longitude: cached.lng };
+          }
         }
 
         const lastKnown = await withTimeout(
@@ -486,6 +501,12 @@ export async function triggerSilentSOS(
       } catch {}
     };
 
+    const isCrashEscalation = triggerSource === 'crash';
+    const crashDetail =
+      isCrashEscalation && options?.crashTelemetry
+        ? ` (${Math.round(options.crashTelemetry.speedKmh || 0)} km/h, ${(options.crashTelemetry.gForce || 0).toFixed(1)}G)`
+        : '';
+
     const broadcastTask = async () => {
       try {
         await supabase.channel('family-broadcast').send({
@@ -499,7 +520,8 @@ export async function triggerSilentSOS(
             lat: coords.latitude,
             lng: coords.longitude,
             battery: batteryLevel,
-            silent: true,
+            silent: !isCrashEscalation,
+            crash_detected: isCrashEscalation,
             source: triggerSource,
             target_family_user_ids: targetFamilyUserIds,
             triggered_at: timestamp,
@@ -513,8 +535,10 @@ export async function triggerSilentSOS(
       try {
         await sendEmergencyPushNotification(
           targetFamilyUserIds,
-          '🚨 SILENT SOS DISTRESS ALERT!',
-          `URGENT: ${senderName} triggered a covert emergency SOS! Tap to open live distress tracking map.`,
+          isCrashEscalation ? '🚗 CAR CRASH SOS ALERT!' : '🚨 SILENT SOS DISTRESS ALERT!',
+          isCrashEscalation
+            ? `URGENT: ${senderName} may have been in a vehicle crash${crashDetail} and did not respond to check-in! Tap to view location.`
+            : `URGENT: ${senderName} triggered a covert emergency SOS! Tap to open live distress tracking map.`,
           'sos',
           senderName,
           coords.latitude,
@@ -534,7 +558,7 @@ export async function triggerSilentSOS(
           lng: coords.longitude,
           battery: batteryLevel,
           alertType: 'sos',
-          silent: true,
+          silent: !isCrashEscalation,
         });
       } catch {}
     };

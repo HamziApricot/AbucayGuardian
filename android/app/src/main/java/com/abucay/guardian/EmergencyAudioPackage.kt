@@ -11,7 +11,8 @@ class EmergencyAudioPackage : ReactPackage {
             EmergencyAudioModule(reactContext),
             DirectSMSModule(reactContext),
             CovertSOSModule(reactContext),
-            AppUpdaterModule(reactContext)
+            AppUpdaterModule(reactContext),
+            CrashDetectionModule(reactContext)
         )
     }
 

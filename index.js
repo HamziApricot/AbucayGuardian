@@ -4,12 +4,21 @@ import './src/services/BackgroundLocationTask';
 import { getBackgroundGeolocation } from './src/services/LocationTrackingService';
 import App from './App';
 
-// Headless background task for Silent SOS (works when app is minimized, locked, or killed)
+// Headless background task for Silent / Crash SOS (works when app is minimized, locked, or killed)
 AppRegistry.registerHeadlessTask('SilentSOSTask', () => async (taskData) => {
   try {
     const source = taskData?.source || 'manual';
     const { triggerSilentSOS } = require('./src/services/SilentSOSService');
-    await triggerSilentSOS(source, { waitForRefinement: true });
+    const crashTelemetry =
+      source === 'crash'
+        ? {
+            lat: typeof taskData?.crashLat === 'number' ? taskData.crashLat : undefined,
+            lng: typeof taskData?.crashLng === 'number' ? taskData.crashLng : undefined,
+            speedKmh: typeof taskData?.crashSpeedKmh === 'number' ? taskData.crashSpeedKmh : undefined,
+            gForce: typeof taskData?.crashGForce === 'number' ? taskData.crashGForce : undefined,
+          }
+        : undefined;
+    await triggerSilentSOS(source, { waitForRefinement: true, crashTelemetry });
   } catch (e) {
     console.warn('[SilentSOSTask] Headless execution error:', e);
   }

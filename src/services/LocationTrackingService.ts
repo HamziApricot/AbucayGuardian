@@ -1,6 +1,7 @@
 import { NativeModules, TurboModuleRegistry } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { supabase } from '../lib/supabase';
+import { reportLocationToCrashDetector } from './CrashDetectionService';
 
 // Safely probe if native module "RNBackgroundGeolocation" is linked in current runtime (e.g., custom dev build vs Expo Go)
 export function getBackgroundGeolocation(): any | null {
@@ -45,6 +46,12 @@ export class LocationTrackingService {
     bgGeo.onLocation(
       async (location: any) => {
         console.log('[Location Engine] New Point:', location.coords.latitude, location.coords.longitude);
+        reportLocationToCrashDetector(
+          location.coords.latitude,
+          location.coords.longitude,
+          location.coords.speed ?? -1,
+          location.activity?.type || null
+        );
         if (userId) {
           try {
             await supabase.from('tracker').upsert({
@@ -69,10 +76,26 @@ export class LocationTrackingService {
       }
     );
 
-    // 2. Motion state changes (Stationary vs Moving)
+    // 2. Motion & activity changes (in_vehicle, walking, stationary)
     bgGeo.onMotionChange((event: any) => {
       console.log('[Location Engine] Motion state changed. Is Moving:', event.isMoving);
+      if (event?.location?.coords) {
+        reportLocationToCrashDetector(
+          event.location.coords.latitude,
+          event.location.coords.longitude,
+          event.location.coords.speed ?? -1,
+          event.location.activity?.type || null
+        );
+      }
     });
+
+    if (typeof bgGeo.onActivityChange === 'function') {
+      bgGeo.onActivityChange((event: any) => {
+        if (event?.activity) {
+          reportLocationToCrashDetector(0, 0, -1, event.activity);
+        }
+      });
+    }
 
     // 3. HTTP Sync Events
     bgGeo.onHttp((response: any) => {

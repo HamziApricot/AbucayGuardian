@@ -29,6 +29,8 @@ import {
     stopEmergencySpeech,
 } from '../services/EmergencySpeechService';
 import { checkForAppUpdate, getCurrentAppVersion } from '../services/AppUpdateService';
+import { CrashDetectionSettingsModal } from '../components/CrashDetectionSettingsModal';
+import { getCrashDetectionEnabled } from '../services/CrashDetectionService';
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
@@ -38,6 +40,8 @@ export default function ProfileScreen() {
     const [editing, setEditing] = useState(false);
     const [showPermissionsModal, setShowPermissionsModal] = useState(false);
     const [showCovertModal, setShowCovertModal] = useState(false);
+    const [showCrashModal, setShowCrashModal] = useState(false);
+    const [crashEnabled, setCrashEnabled] = useState(true);
     const [speechEnabled, setSpeechEnabled] = useState(true);
     const [name, setName] = useState(userProfile?.name ?? '');
     const [countryCode, setCountryCode] = useState('+63');
@@ -69,6 +73,7 @@ export default function ProfileScreen() {
         getCurrentAppVersion().then((v) => {
             if (v?.versionName) setAppVersion(v.versionName);
         }).catch(() => {});
+        getCrashDetectionEnabled().then(setCrashEnabled).catch(() => {});
     }, []);
 
     const handleSaveTextBee = async () => {
@@ -501,6 +506,30 @@ export default function ProfileScreen() {
 
                     <View style={{ height: 12 }} />
 
+                    {/* Car Crash Detection */}
+                    <TouchableOpacity
+                        style={styles.permissionActionRow}
+                        onPress={() => setShowCrashModal(true)}
+                        activeOpacity={0.7}
+                    >
+                        <View style={styles.permissionLeft}>
+                            <View style={[styles.infoIcon, { backgroundColor: '#DC262615' }]}>
+                                <Ionicons name="car-sport-outline" size={18} color="#DC2626" />
+                            </View>
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                                <Text style={styles.infoLabel}>Car Crash Detection</Text>
+                                <Text style={styles.permissionSub}>
+                                    {crashEnabled
+                                        ? 'Armed above 40 km/h • Impact & gyro sensor fusion'
+                                        : 'Paused • Tap to enable & check device readiness'}
+                                </Text>
+                            </View>
+                        </View>
+                        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                    </TouchableOpacity>
+
+                    <View style={{ height: 12 }} />
+
                     {/* Emergency Voice Reader (TTS) */}
                     <View style={styles.permissionActionRow}>
                         <View style={styles.permissionLeft}>
@@ -747,6 +776,16 @@ export default function ProfileScreen() {
             <DisguisedCalculatorModal
                 visible={showCovertModal}
                 onClose={() => setShowCovertModal(false)}
+            />
+
+            {/* Car Crash Detection Settings & Readiness Modal */}
+            <CrashDetectionSettingsModal
+                visible={showCrashModal}
+                onClose={() => {
+                    setShowCrashModal(false);
+                    getCrashDetectionEnabled().then(setCrashEnabled).catch(() => {});
+                }}
+                onOpenPermissions={() => setShowPermissionsModal(true)}
             />
         </ScrollView>
     );

@@ -41,6 +41,13 @@ import { useCovertVolume } from './src/hooks/useCovertVolume';
 import { syncNativeCovertSOSState } from './src/services/SilentSOSService';
 import { UpdatePromptModal } from './src/components/UpdatePromptModal';
 import { checkForAppUpdate, type AppUpdateInfo } from './src/services/AppUpdateService';
+import { CrashCheckInModal } from './src/components/CrashCheckInModal';
+import {
+    type CrashDetectionEvent,
+    consumePendingCrashCheckIn,
+    subscribeToCrashEvents,
+    syncNativeCrashDetection,
+} from './src/services/CrashDetectionService';
 
 function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -101,6 +108,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     const { showToast } = useAlert();
     const [activeNDRRMCAlert, setActiveNDRRMCAlert] = useState<NDRRMCEmergencyAlertData | null>(null);
     const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
+    const [activeCrashEvent, setActiveCrashEvent] = useState<CrashDetectionEvent | null>(null);
     const activeAlertRef = useRef<NDRRMCEmergencyAlertData | null>(null);
     activeAlertRef.current = activeNDRRMCAlert;
 
@@ -155,6 +163,21 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
 
         syncPendingNativeAlert();
 
+        const syncPendingCrashCheckIn = async () => {
+            try {
+                const pendingCrash = await consumePendingCrashCheckIn();
+                if (pendingCrash) {
+                    setActiveCrashEvent(pendingCrash);
+                }
+            } catch { }
+        };
+        syncPendingCrashCheckIn();
+
+        const unsubCrashEvents = subscribeToCrashEvents(
+            (crashEvt) => setActiveCrashEvent(crashEvt),
+            () => setActiveCrashEvent(null)
+        );
+
         const nativeAlertSub = DeviceEventEmitter.addListener('onNativeEmergencyAlert', (rawJson: string) => {
             try {
                 const parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
@@ -193,6 +216,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
         const appStateSub = AppState.addEventListener('change', (nextState) => {
             if (nextState === 'active') {
                 syncPendingNativeAlert();
+                syncPendingCrashCheckIn();
             }
         });
 
@@ -360,6 +384,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             nativeDismissSub.remove();
             silentSosSentSub.remove();
             manualUpdateSub.remove();
+            unsubCrashEvents();
             appStateSub.remove();
             sub.remove();
             expoSub.remove();
@@ -398,6 +423,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             return;
         }
         syncNativeCovertSOSState(user.id);
+        syncNativeCrashDetection();
         showGuardianQuickActionsNotification();
         requestOverlayAndBatteryPermissions();
         registerPushToken(user.id);
@@ -580,6 +606,11 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                 visible={Boolean(availableUpdate)}
                 updateInfo={availableUpdate}
                 onClose={() => setAvailableUpdate(null)}
+            />
+            <CrashCheckInModal
+                visible={Boolean(activeCrashEvent)}
+                crashEvent={activeCrashEvent}
+                onDismiss={() => setActiveCrashEvent(null)}
             />
         </>
     );

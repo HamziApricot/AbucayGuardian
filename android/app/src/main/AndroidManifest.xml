@@ -68,6 +68,15 @@
       </intent-filter>
     </activity>
     <service
+        android:name=".CrashDetectionService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="location|specialUse">
+      <property
+          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+          android:value="Car crash detection sensor fusion using speed gating, accelerometer G-force, and gyroscope rotation"/>
+    </service>
+    <service
         android:name=".CovertSOSService"
         android:enabled="true"
         android:exported="false"

@@ -38,10 +38,47 @@ object CovertSOSDispatcher {
         }
         lastDispatchTimeMs = now
 
+        return startHeadlessSOSTask(appContext, source, null)
+    }
+
+    @Synchronized
+    fun dispatchCrashSOS(
+        context: Context,
+        lat: Double?,
+        lng: Double?,
+        speedKmh: Double,
+        gForce: Double
+    ): Boolean {
+        val appContext = context.applicationContext
+        if (!CovertSOSPreferences.isLoggedIn(appContext)) {
+            Log.d(TAG, "Skipped crash SOS: user not logged in")
+            return false
+        }
+        lastDispatchTimeMs = System.currentTimeMillis()
+        val extras = mapOf(
+            "crashSpeedKmh" to speedKmh,
+            "crashGForce" to gForce,
+            "crashLat" to lat,
+            "crashLng" to lng
+        )
+        return startHeadlessSOSTask(appContext, "crash", extras)
+    }
+
+    private fun startHeadlessSOSTask(
+        appContext: Context,
+        source: String,
+        crashExtras: Map<String, Double?>?
+    ): Boolean {
         return try {
             HeadlessJsTaskService.acquireWakeLockNow(appContext)
             val taskIntent = Intent(appContext, CovertSOSHeadlessTaskService::class.java).apply {
                 putExtra(CovertSOSHeadlessTaskService.EXTRA_SOURCE, source)
+                crashExtras?.let { map ->
+                    (map["crashSpeedKmh"])?.let { putExtra(CovertSOSHeadlessTaskService.EXTRA_CRASH_SPEED_KMH, it) }
+                    (map["crashGForce"])?.let { putExtra(CovertSOSHeadlessTaskService.EXTRA_CRASH_GFORCE, it) }
+                    (map["crashLat"])?.let { putExtra(CovertSOSHeadlessTaskService.EXTRA_CRASH_LAT, it) }
+                    (map["crashLng"])?.let { putExtra(CovertSOSHeadlessTaskService.EXTRA_CRASH_LNG, it) }
+                }
             }
 
             try {

@@ -13,6 +13,7 @@ object CovertSOSPreferences {
     private const val KEY_USER_ID = "user_id"
     private const val KEY_VOLUME_ENABLED = "volume_pattern_enabled"
     private const val KEY_WEATHER_TAP_ENABLED = "weather_tap_enabled"
+    private const val KEY_CRASH_ENABLED = "crash_detection_enabled"
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -46,6 +47,17 @@ object CovertSOSPreferences {
 
     fun shouldRunBackgroundService(context: Context): Boolean {
         return isLoggedIn(context) && isVolumePatternEnabled(context)
+    }
+
+    fun setCrashDetectionEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_CRASH_ENABLED, enabled).apply()
+    }
+
+    fun isCrashDetectionEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_CRASH_ENABLED, true)
+
+    fun shouldRunCrashDetectionService(context: Context): Boolean {
+        return isLoggedIn(context) && isCrashDetectionEnabled(context)
     }
 }
 

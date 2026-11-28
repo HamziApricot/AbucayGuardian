@@ -5,6 +5,9 @@ All notable changes to **Abucay Guardian** are documented in this file.
 ## [2.0.0] - 2026-11-28
 
 ### Added
+- **Car Crash Detection (`CrashDetectionService.kt`, `CrashDetectionModule.kt`, `CrashDetectionService.ts`, `CrashCheckInModal.tsx`, `CrashDetectionSettingsModal.tsx`)**:
+  - Added multi-sensor crash detection pipeline modeled on GPS speed gating (`≥ 40 km/h` / `25 mph` within 5s prior to impact), linear acceleration G-force (`≥ 4.0G`) + gyroscope rotational dynamics (`≥ 2.2 rad/s`), post-impact stationary verification, battery/power saver protection (`> 10%`), and an audible 30-second *"Are You Okay?"* check-in countdown that auto-escalates to family SOS + Push + Batch SMS if unanswered.
+  - Added Car Crash Detection settings & live device readiness checklist (`Always` location, Physical Activity, battery/power status, hardware accel/gyro, network signal) plus a safe **"Test Crash Check-In Alert"** button under **Profile → Car Crash Detection**.
 - **In-App Auto-Updater & Installer (`AppUpdaterModule.kt`, `AppUpdateService.ts`, `UpdatePromptModal.tsx`, `App.tsx`, `ProfileScreen.tsx`)**:
   - Automatically checks GitHub Releases (`releases/latest`) on startup and adds a manual **App Updates** check row in `ProfileScreen`.
   - Displays an update modal with version comparison, APK size, release notes preview, live download progress bar, automatic redirect/stream download into cached storage, *"Install unknown apps"* permission handling with auto-resume on return, and direct system APK installer launch via `FileProvider`.

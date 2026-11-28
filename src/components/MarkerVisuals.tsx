@@ -113,7 +113,8 @@ export const AvatarPinHub: React.FC<{
   isSelected: boolean;
   ringColor: string;
   statusColor: string;
-  avatarScale: Animated.Value;
+  avatarScale: Animated.Value | number;
+  onImageLoad?: () => void;
 }> = ({
   avatarUrl,
   name,
@@ -123,6 +124,7 @@ export const AvatarPinHub: React.FC<{
   ringColor,
   statusColor,
   avatarScale,
+  onImageLoad,
 }) => (
   <Animated.View
     style={[
@@ -148,7 +150,12 @@ export const AvatarPinHub: React.FC<{
     <View style={[styles.avatarColorRing, { borderColor: ringColor }]}>
       <View style={styles.avatarWhiteMat}>
         {avatarUrl ? (
-          <Image source={{ uri: avatarUrl }} style={styles.avatar} />
+          <Image
+            source={{ uri: avatarUrl }}
+            style={styles.avatar}
+            onLoad={onImageLoad}
+            onError={onImageLoad}
+          />
         ) : (
           <View style={[styles.avatarFallback, { backgroundColor: ringColor }]}>
             {isSelf ? (

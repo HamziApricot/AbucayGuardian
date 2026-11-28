@@ -15,6 +15,9 @@ class CovertSOSBootReceiver : BroadcastReceiver() {
             if (CovertSOSPreferences.shouldRunBackgroundService(context)) {
                 CovertSOSService.startOrUpdate(context)
             }
+            if (CovertSOSPreferences.shouldRunCrashDetectionService(context)) {
+                CrashDetectionService.startOrUpdate(context)
+            }
         }
     }
 }

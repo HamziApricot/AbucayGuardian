@@ -1,5 +1,5 @@
-import React, { useRef, useState, useEffect, useMemo, useImperativeHandle, forwardRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Alert, Animated, Easing } from 'react-native';
+import React, { useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { StyleSheet, View, Text, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { HeadingBeamSvg, AvatarPinHub, BatteryPinStack } from './MarkerVisuals';
 import { getTrackingStatus } from '../utils/tracking';
@@ -180,7 +180,8 @@ const AnimatedNativeMarker: React.FC<{
   statusColor: string;
   status: any;
   onPress: () => void;
-  Marker: any;
+  Annotation: any;
+  isViewAnnotation: boolean;
   mapBearing?: number;
 }> = ({
   member,
@@ -192,9 +193,11 @@ const AnimatedNativeMarker: React.FC<{
   statusColor,
   status,
   onPress,
-  Marker,
+  Annotation,
+  isViewAnnotation,
   mapBearing = 0,
 }) => {
+  const annotationRef = useRef<any>(null);
   const isSOS = Boolean(member.isSOS);
   const effectiveMarkerColor = isSOS ? '#DC2626' : markerColor;
   const effectiveStatusColor = isSOS ? '#DC2626' : statusColor;
@@ -204,6 +207,51 @@ const AnimatedNativeMarker: React.FC<{
     () => (member.id || 'member').replace(/[^a-zA-Z0-9_-]/g, '') || 'member',
     [member.id]
   );
+
+  // Smoothly glide coordinate updates while keeping MapLibre OpenGL anchor locked 1:1 on pan/zoom
+  const [displayLngLat, setDisplayLngLat] = useState<[number, number]>([
+    member.longitude,
+    member.latitude,
+  ]);
+  const currentLngLatRef = useRef<[number, number]>([member.longitude, member.latitude]);
+
+  useEffect(() => {
+    const startLng = currentLngLatRef.current[0];
+    const startLat = currentLngLatRef.current[1];
+    const targetLng = member.longitude;
+    const targetLat = member.latitude;
+
+    const dLng = targetLng - startLng;
+    const dLat = targetLat - startLat;
+    if (Math.abs(dLng) < 1e-7 && Math.abs(dLat) < 1e-7) return;
+
+    // Snap immediately across very large teleports (> ~5 km)
+    if (Math.abs(dLng) > 0.05 || Math.abs(dLat) > 0.05) {
+      currentLngLatRef.current = [targetLng, targetLat];
+      setDisplayLngLat([targetLng, targetLat]);
+      return;
+    }
+
+    let rafId = 0;
+    const startMs = Date.now();
+    const durationMs = 420;
+
+    const step = () => {
+      const t = Math.min(1, (Date.now() - startMs) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next: [number, number] = [startLng + dLng * eased, startLat + dLat * eased];
+      currentLngLatRef.current = next;
+      setDisplayLngLat(next);
+      if (t < 1) {
+        rafId = requestAnimationFrame(step);
+      }
+    };
+    rafId = requestAnimationFrame(step);
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [member.longitude, member.latitude]);
 
   const batteryPct =
     member.batteryLevel != null && member.batteryLevel >= 0
@@ -227,97 +275,62 @@ const AnimatedNativeMarker: React.FC<{
     ? 'Fair'
     : 'Good';
 
-  const markerScale = useRef(new Animated.Value(0.1)).current;
-  const markerOpacity = useRef(new Animated.Value(0)).current;
-  const markerTranslateY = useRef(new Animated.Value(-24)).current;
-  const avatarScale = useRef(new Animated.Value(isSOS ? 1.2 : isSelected ? 1.12 : 1)).current;
-  const sosPulse = useRef(new Animated.Value(0)).current;
+  const quantizedHeading =
+    member.heading != null && !isNaN(member.heading)
+      ? Math.round((((member.heading - mapBearing + 360) % 360) / 2)) * 2
+      : null;
 
-  const [isBadgeVisible, setIsBadgeVisible] = useState(isSelected || isSOS);
-  const badgeAnim = useRef(new Animated.Value(isSelected || isSOS ? 1 : 0)).current;
+  const isBadgeVisible = isSelected || isSOS;
+  const pinScale = isSOS ? 1.12 : isSelected ? 1.06 : 1;
 
+  const triggerBitmapRefresh = useCallback(() => {
+    if (!isViewAnnotation || typeof annotationRef.current?.refresh !== 'function') return;
+    requestAnimationFrame(() => {
+      annotationRef.current?.refresh?.();
+    });
+  }, [isViewAnnotation]);
+
+  // Re-rasterize MapLibre OpenGL bitmap whenever visual marker state or image updates
   useEffect(() => {
-    Animated.parallel([
-      Animated.spring(markerScale, { toValue: 1, friction: 5, tension: 55, useNativeDriver: false }),
-      Animated.timing(markerOpacity, { toValue: 1, duration: 280, useNativeDriver: false }),
-      Animated.spring(markerTranslateY, { toValue: 0, friction: 5.5, tension: 60, useNativeDriver: false }),
-    ]).start();
-  }, []);
-
-  useEffect(() => {
-    if (!isSOS) {
-      sosPulse.stopAnimation();
-      sosPulse.setValue(0);
-      return;
-    }
-    const loop = Animated.loop(
-      Animated.timing(sosPulse, {
-        toValue: 1,
-        duration: 1500,
-        easing: Easing.out(Easing.ease),
-        useNativeDriver: false,
-      })
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [isSOS]);
-
-  const sosPulseScale = sosPulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.88, 1.72],
-  });
-  const sosPulseOpacity = sosPulse.interpolate({
-    inputRange: [0, 0.7, 1],
-    outputRange: [0.75, 0.25, 0],
-  });
-
-  useEffect(() => {
-    if (isSelected || isSOS) {
-      setIsBadgeVisible(true);
-      Animated.parallel([
-        Animated.spring(avatarScale, { toValue: isSOS ? 1.2 : 1.12, friction: 6, tension: 70, useNativeDriver: false }),
-        Animated.spring(badgeAnim, { toValue: 1, friction: 6, tension: 65, useNativeDriver: false }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.spring(avatarScale, { toValue: 1, friction: 6, tension: 70, useNativeDriver: false }),
-        Animated.timing(badgeAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
-      ]).start(() => {
-        setIsBadgeVisible(false);
-      });
-    }
-  }, [isSelected, isSOS]);
+    if (!isViewAnnotation) return;
+    triggerBitmapRefresh();
+    const settleTimer = setTimeout(triggerBitmapRefresh, 90);
+    return () => clearTimeout(settleTimer);
+  }, [
+    isViewAnnotation,
+    triggerBitmapRefresh,
+    isBadgeVisible,
+    isSelected,
+    isSOS,
+    isSelf,
+    isNavigating,
+    markerColor,
+    statusColor,
+    batteryPct,
+    isCharging,
+    member.name,
+    member.avatarUrl,
+    quantizedHeading,
+    member.speed,
+  ]);
 
   return (
-    <Marker
+    <Annotation
+      ref={isViewAnnotation ? annotationRef : undefined}
       key={member.id}
       id={`marker-${member.id}`}
-      lngLat={[member.longitude, member.latitude]}
+      lngLat={displayLngLat}
       anchor="bottom"
+      offset={isViewAnnotation ? [0, 10] : undefined}
       onPress={onPress}
     >
-      <Animated.View
-        style={[
-          styles.markerContainer,
-          {
-            opacity: markerOpacity,
-            transform: [{ scale: markerScale }, { translateY: markerTranslateY }],
-          },
-        ]}
-      >
+      <View collapsable={false} style={styles.markerContainer}>
         {isBadgeVisible && (
-          <Animated.View
+          <View
             style={[
               styles.infoBadge,
               styles.infoBadgeSelected,
-              { borderLeftColor: markerColor, borderLeftWidth: 3.5 },
-              {
-                opacity: badgeAnim,
-                transform: [
-                  { scale: badgeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }) },
-                  { translateY: badgeAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
-                ],
-              },
+              { borderLeftColor: isSOS ? '#DC2626' : markerColor, borderLeftWidth: 3.5 },
             ]}
           >
             <View style={styles.markerTitleRow}>
@@ -335,50 +348,31 @@ const AnimatedNativeMarker: React.FC<{
                   ? `${member.speed > 1 ? `Moving ${Math.round(member.speed * 3.6)} km/h` : 'Stationary'}${batteryPct !== null ? ` • ${isCharging ? '⚡' : '🔋'} ${batteryPct}% ${batteryHealthStr}` : ''} • ±${Math.round(member.accuracy || 5)}m`
                   : `Offline • ${status.fromAgo}${batteryPct !== null ? ` • ${batteryPct}%` : ''}`}
             </Text>
-          </Animated.View>
+          </View>
         )}
         {isBadgeVisible && (
-          <Animated.View
+          <View
             style={[
               styles.nameBoxPointer,
               isSOS && { borderTopColor: '#DC2626' },
-              {
-                opacity: badgeAnim,
-                transform: [{ scale: badgeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }) }],
-              },
             ]}
           />
         )}
 
-        {/* Centered Marker Hub: Heading Beam, SOS Pulse Beacon, and Double-Ring Profile Photo */}
+        {/* Centered Marker Hub: Compass Beam and Porcelain-Bezel Profile Photo */}
         <View style={styles.avatarAnchor}>
-          {/* Facing Direction Indicator (Radial FOV Beam & Outer Chevron, compensated for map rotation) */}
-          {member.heading != null && !isNaN(member.heading) && (
+          {quantizedHeading !== null && (
             <View
               pointerEvents="none"
               style={[
                 styles.headingContainer,
                 {
-                  transform: [{ rotate: `${((member.heading ?? 0) - mapBearing + 360) % 360}deg` }],
+                  transform: [{ rotate: `${quantizedHeading}deg` }],
                 },
               ]}
             >
               <HeadingBeamSvg color={beamColor} gradientId={`heading-beam-${safeGradId}`} />
             </View>
-          )}
-
-          {/* Pulsing Emergency SOS Beacon Ring behind Avatar */}
-          {isSOS && (
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.sosPulseRing,
-                {
-                  opacity: sosPulseOpacity,
-                  transform: [{ scale: sosPulseScale }],
-                },
-              ]}
-            />
           )}
 
           <AvatarPinHub
@@ -389,7 +383,8 @@ const AnimatedNativeMarker: React.FC<{
             isSelected={isSelected}
             ringColor={ringColor}
             statusColor={effectiveStatusColor}
-            avatarScale={avatarScale}
+            avatarScale={pinScale}
+            onImageLoad={triggerBitmapRefresh}
           />
         </View>
 
@@ -401,8 +396,8 @@ const AnimatedNativeMarker: React.FC<{
           ringColor={ringColor}
           marginTop={batteryPct !== null ? -43 : -40}
         />
-      </Animated.View>
-    </Marker>
+      </View>
+    </Annotation>
   );
 };
 
@@ -448,6 +443,7 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
     const [selectedHourIndex, setSelectedHourIndex] = useState<number>(0);
     const [isLoadingWeather, setIsLoadingWeather] = useState<boolean>(false);
     const [isCameraMoving, setIsCameraMoving] = useState<boolean>(false);
+    const lastEmittedBearingRef = useRef<number>(-17.6);
 
     const isWeatherVisible = isControlled ? Boolean(controlledWeatherVisible) : internalWeatherVisible;
     const weatherMode = controlledWeatherMode ?? internalWeatherMode;
@@ -479,6 +475,26 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
       }
       return members;
     }, [members, activeSelectedId, navigationRoute]);
+
+    const memberGroundHalosGeoJSON = useMemo(() => {
+      return {
+        type: 'FeatureCollection' as const,
+        features: displayedMembers
+          .filter((m) => Boolean(m.isSOS) || m.id === activeSelectedId)
+          .map((m) => ({
+            type: 'Feature' as const,
+            id: `ground-halo-${m.id}`,
+            properties: {
+              isSOS: Boolean(m.isSOS) ? 1 : 0,
+              color: m.isSOS ? '#DC2626' : m.relationship === 'You' ? '#2563EB' : (m.color || '#10B981'),
+            },
+            geometry: {
+              type: 'Point' as const,
+              coordinates: [m.longitude, m.latitude],
+            },
+          })),
+      };
+    }, [displayedMembers, activeSelectedId]);
 
     const routeGeoJSON = useMemo(() => {
       return {
@@ -596,7 +612,9 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
       return null;
     }
 
-    const { Map, Camera, VectorSource, GeoJSONSource, Layer, Marker, RasterSource } = MapLibre;
+    const { Map, Camera, VectorSource, GeoJSONSource, Layer, Marker, ViewAnnotation, RasterSource } = MapLibre;
+    const AnnotationComponent = ViewAnnotation || Marker;
+    const isUsingViewAnnotation = Boolean(ViewAnnotation);
     const centerLng = members[0]?.longitude ?? 120.5378;
     const centerLat = members[0]?.latitude ?? 14.7275;
 
@@ -677,7 +695,12 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
           onRegionIsChanging={(e: any) => {
             if (e.nativeEvent?.userInteraction) onMapInteraction?.();
             const heading = e.properties?.heading ?? e.nativeEvent?.properties?.heading;
-            if (typeof heading === 'number' && !isNaN(heading)) {
+            if (
+              typeof heading === 'number' &&
+              !isNaN(heading) &&
+              Math.abs(heading - lastEmittedBearingRef.current) >= 2
+            ) {
+              lastEmittedBearingRef.current = heading;
               setMapBearing(heading);
             }
           }}
@@ -685,6 +708,7 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
             setIsCameraMoving(false);
             const heading = e.properties?.heading ?? e.nativeEvent?.properties?.heading;
             if (typeof heading === 'number' && !isNaN(heading)) {
+              lastEmittedBearingRef.current = heading;
               setMapBearing(heading);
             }
           }}
@@ -809,6 +833,24 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
             <SafetyMarkersOverlay centerLat={centerLat} centerLng={centerLng} MapLibre={MapLibre} />
           )}
 
+          {/* Native OpenGL ground halos for selected / SOS members (100% locked to map surface) */}
+          <GeoJSONSource id="member-ground-halos" data={memberGroundHalosGeoJSON}>
+            <Layer
+              id="member-ground-halo-outer"
+              type="circle"
+              source="member-ground-halos"
+              paint={{
+                'circle-radius': ['case', ['==', ['get', 'isSOS'], 1], 38, 22],
+                'circle-color': ['get', 'color'],
+                'circle-opacity': ['case', ['==', ['get', 'isSOS'], 1], 0.22, 0.14],
+                'circle-stroke-width': ['case', ['==', ['get', 'isSOS'], 1], 2.5, 1.5],
+                'circle-stroke-color': ['get', 'color'],
+                'circle-stroke-opacity': ['case', ['==', ['get', 'isSOS'], 1], 0.75, 0.45],
+                'circle-pitch-alignment': 'map',
+              }}
+            />
+          </GeoJSONSource>
+
           {displayedMembers.map((member) => {
             const isSelf = member.relationship === 'You';
             const isTarget = navigationRoute && (member.id === navigationRoute.targetMemberId || member.name === navigationRoute.label);
@@ -830,7 +872,8 @@ export const FamilyMapNative3D = forwardRef<FamilyMap3DHandle, FamilyMap3DProps>
                 statusColor={statusColor}
                 status={status}
                 onPress={() => handleFocusOnMember(member)}
-                Marker={Marker}
+                Annotation={AnnotationComponent}
+                isViewAnnotation={isUsingViewAnnotation}
                 mapBearing={mapBearing}
               />
             );
@@ -997,16 +1040,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1,
-  },
-  sosPulseRing: {
-    position: 'absolute',
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    borderWidth: 2.5,
-    borderColor: '#EF4444',
-    backgroundColor: 'rgba(239, 68, 68, 0.22)',
-    zIndex: 2,
   },
   markerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   markerTitleDot: { width: 6.5, height: 6.5, borderRadius: 3.25 },

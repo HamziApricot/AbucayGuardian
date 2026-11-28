@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { getDeviceBatteryLevel, getDevicePowerState } from './batteryService';
+import { reportLocationToCrashDetector } from './CrashDetectionService';
 
 export const BACKGROUND_LOCATION_TASK = 'ABUCAY_BACKGROUND_LOCATION_TASK';
 const USER_ID_KEY = 'ABUCAY_BACKGROUND_USER_ID';
@@ -44,6 +45,8 @@ try {
           const speed = Math.max(0, latest.coords.speed ?? 0);
           const heading = latest.coords.heading ?? null;
           const nowIso = new Date().toISOString();
+
+          reportLocationToCrashDetector(latitude, longitude, speed);
 
           try {
             const userId = await AsyncStorage.getItem(USER_ID_KEY);

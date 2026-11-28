@@ -162,6 +162,16 @@ object EmergencyPopupManager {
         overlayFallbackRunnable = null
     }
 
+    fun bringMainActivityToForeground(context: Context) {
+        val appContext = context.applicationContext
+        mainHandler.post {
+            wakeUpScreen(appContext)
+            if (!isMainActivityResumed) {
+                tryBringMainActivityToFront(appContext, null)
+            }
+        }
+    }
+
     private fun buildMainActivityIntent(appContext: Context, alertJson: String?): Intent {
         return Intent(appContext, MainActivity::class.java).apply {
             addFlags(

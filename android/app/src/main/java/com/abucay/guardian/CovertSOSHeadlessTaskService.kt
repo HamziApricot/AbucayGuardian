@@ -21,6 +21,10 @@ class CovertSOSHeadlessTaskService : HeadlessJsTaskService() {
         const val TASK_NAME = "SilentSOSTask"
         const val EXTRA_SOURCE = "source"
         const val EXTRA_USE_FOREGROUND = "use_foreground"
+        const val EXTRA_CRASH_SPEED_KMH = "crash_speed_kmh"
+        const val EXTRA_CRASH_GFORCE = "crash_gforce"
+        const val EXTRA_CRASH_LAT = "crash_lat"
+        const val EXTRA_CRASH_LNG = "crash_lng"
         private const val TASK_TIMEOUT_MS = 30_000L
         private const val FALLBACK_NOTIFICATION_ID = 91103
     }
@@ -36,6 +40,18 @@ class CovertSOSHeadlessTaskService : HeadlessJsTaskService() {
         val source = intent?.getStringExtra(EXTRA_SOURCE) ?: "manual"
         val data = Arguments.createMap().apply {
             putString("source", source)
+            if (intent != null && intent.hasExtra(EXTRA_CRASH_SPEED_KMH)) {
+                putDouble("crashSpeedKmh", intent.getDoubleExtra(EXTRA_CRASH_SPEED_KMH, 0.0))
+            }
+            if (intent != null && intent.hasExtra(EXTRA_CRASH_GFORCE)) {
+                putDouble("crashGForce", intent.getDoubleExtra(EXTRA_CRASH_GFORCE, 0.0))
+            }
+            if (intent != null && intent.hasExtra(EXTRA_CRASH_LAT)) {
+                putDouble("crashLat", intent.getDoubleExtra(EXTRA_CRASH_LAT, 0.0))
+            }
+            if (intent != null && intent.hasExtra(EXTRA_CRASH_LNG)) {
+                putDouble("crashLng", intent.getDoubleExtra(EXTRA_CRASH_LNG, 0.0))
+            }
         }
         // allowedInForeground = true allows uniform execution whether app is open, minimized, or locked
         return HeadlessJsTaskConfig(
