@@ -1,4 +1,4 @@
-import { NativeModules, Platform, DeviceEventEmitter } from 'react-native';
+import { NativeModules, Platform, DeviceEventEmitter, AppState, ToastAndroid } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
@@ -7,11 +7,10 @@ import { sendEmergencyPushNotification } from './EmergencyNotificationService';
 import { sendEmergencySMSToFamily } from './EmergencySMSService';
 import { queueSOSEvent, getLastKnownLocation, saveLastKnownLocation } from '../utils/cache';
 
-export type CovertTriggerSource = 'calculator' | 'weather' | 'volume' | 'shake' | 'manual';
+export type CovertTriggerSource = 'calculator' | 'weather' | 'volume' | 'manual';
 
 export interface CovertSettings {
   secretPin: string;
-  shakeEnabled: boolean;
   volumePatternEnabled: boolean;
   weatherTapEnabled: boolean;
 }
@@ -30,7 +29,6 @@ export interface TriggerSilentSOSOptions {
 
 export const DEFAULT_COVERT_SETTINGS: CovertSettings = {
   secretPin: '911911',
-  shakeEnabled: true,
   volumePatternEnabled: true,
   weatherTapEnabled: true,
 };
@@ -142,7 +140,6 @@ export async function syncNativeCovertSOSState(
     await NativeModules.CovertSOS.syncSettings(
       Boolean(resolvedUserId),
       resolvedUserId || null,
-      Boolean(settings.shakeEnabled),
       Boolean(settings.volumePatternEnabled),
       Boolean(settings.weatherTapEnabled)
     );
@@ -302,7 +299,7 @@ async function getPairedFamilyUserIds(userId: string): Promise<string[]> {
 /**
  * Triggers a completely silent, stealth emergency SOS:
  * 1. ZERO audio playback, ZERO vibration (never calls Vibration.vibrate).
- * 2. ZERO confirmation modals, snackbars, or toasts on the sender's device.
+ * 2. Shows a discreet "SOS sent" toast notification once dispatched without blocking modals or sounds.
  * 3. Instant GPS fallback (cached location + timed lastKnown/live lock so background never hangs).
  * 4. Concurrently inserts active SOS event in Supabase sos_events, updates tracker/users, broadcasts over Realtime, and sends Push/SMS.
  * 5. Fails completely silently without showing any error dialog if offline or restricted.
@@ -322,7 +319,6 @@ export async function triggerSilentSOS(
   try {
     // Check if the specific trigger is disabled in user settings BEFORE consuming cooldown
     const settings = await getCovertSettings();
-    if (triggerSource === 'shake' && !settings.shakeEnabled) return false;
     if (triggerSource === 'volume' && !settings.volumePatternEnabled) return false;
     if (triggerSource === 'weather' && !settings.weatherTapEnabled) return false;
 
@@ -550,6 +546,11 @@ export async function triggerSilentSOS(
       pushTask(),
       smsTask(),
     ]);
+
+    DeviceEventEmitter.emit('onSilentSOSSent', activeStatus);
+    if (Platform.OS === 'android' && AppState.currentState !== 'active') {
+      ToastAndroid.show('SOS sent', ToastAndroid.SHORT);
+    }
 
     // 6. Refine GPS coordinates 3 seconds later if initially low accuracy
     const runRefinement = async () => {

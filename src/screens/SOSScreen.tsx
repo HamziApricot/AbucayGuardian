@@ -23,7 +23,7 @@ const COUNTDOWN = 3;
 export default function SOSScreen({ navigation }: Props) {
     const insets = useSafeAreaInsets();
     const { user, userProfile } = useAuth();
-    const { showAlert } = useAlert();
+    const { showAlert, showToast } = useAlert();
     const [phase, setPhase] = useState<'idle' | 'countdown' | 'sent'>('idle');
     const [count, setCount] = useState(COUNTDOWN);
     const [smsStatus, setSmsStatus] = useState<{
@@ -249,7 +249,8 @@ export default function SOSScreen({ navigation }: Props) {
             ? ` (${smsResult.error})`
             : '';
 
-        // Offer to call 911 or re-send SMS
+        // Show concise toast confirmation and offer to call 911 or re-send SMS
+        showToast({ message: 'SOS sent', type: 'success' });
         showAlert({
             title: '🚨 SOS & SMS Dispatched!',
             message: `Your emergency SOS has been broadcasted to your family${smsSummary}. Do you want to call 911 now?`,

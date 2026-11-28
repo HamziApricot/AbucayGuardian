@@ -3,9 +3,9 @@ import { DeviceEventEmitter, Platform } from 'react-native';
 import { triggerSilentSOS } from '../services/SilentSOSService';
 
 /**
- * Listens for the hardware volume button pattern (UP -> UP -> DOWN -> UP)
- * intercepted natively in MainActivity.kt on Android.
- * When matched within 2.5 seconds, triggers covert silent SOS with zero sound/screen-wake.
+ * Listens for the hardware volume button pattern (UP -> DOWN -> UP -> DOWN -> UP -> DOWN)
+ * intercepted natively in MainActivity.kt / CovertVolumeAccessibilityService on Android.
+ * When matched within 5.0 seconds, triggers covert silent SOS with zero sound/screen-wake.
  */
 export function useCovertVolume() {
   useEffect(() => {

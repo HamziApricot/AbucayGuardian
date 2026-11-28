@@ -242,7 +242,6 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
   const handleSaveSettings = async () => {
     const updated = await saveCovertSettings({
       secretPin: pinInput.trim() || DEFAULT_COVERT_SETTINGS.secretPin,
-      shakeEnabled: settings.shakeEnabled,
       volumePatternEnabled: settings.volumePatternEnabled,
       weatherTapEnabled: settings.weatherTapEnabled,
     });
@@ -407,7 +406,7 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
                 ]}>
                   {activeSosInfo?.active
                     ? `🚨 ACTIVE DISTRESS SENT via "${activeSosInfo.source.toUpperCase()}" at ${new Date(activeSosInfo.triggeredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
-                    : '🟢 STANDBY • Ready (911911= or Vol UP-UP-DOWN-UP or 3x Shake)'}
+                    : '🟢 STANDBY • Ready (911911= or Vol UP-DOWN-UP-DOWN-UP-DOWN)'}
                 </Text>
               </View>
 
@@ -456,26 +455,9 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
 
                 <View style={styles.toggleRow}>
                   <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.toggleTitle}>3-Spike Shake Trigger</Text>
-                    <Text style={styles.toggleSub}>
-                      Shake phone 3 times firmly within 1.5 seconds
-                    </Text>
-                  </View>
-                  <Switch
-                    value={settings.shakeEnabled}
-                    onValueChange={(val) =>
-                      setSettings((prev) => ({ ...prev, shakeEnabled: val }))
-                    }
-                    trackColor={{ false: '#334155', true: '#10B981' }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                <View style={styles.toggleRow}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
                     <Text style={styles.toggleTitle}>Hardware Volume Sequence</Text>
                     <Text style={styles.toggleSub}>
-                      Press UP, UP, DOWN, UP on volume keys within 2.5s (Android)
+                      Press UP, DOWN, UP, DOWN, UP, DOWN on volume keys within 5s (Android)
                     </Text>
                   </View>
                   <Switch
@@ -512,7 +494,7 @@ export const DisguisedCalculator: React.FC<DisguisedCalculatorProps> = ({
                   <Text style={styles.sectionHeader}>MINIMIZED & LOCK-SCREEN PROTECTION</Text>
                   <Text style={styles.sectionDesc}>
                     {bgServiceActive
-                      ? '🟢 24/7 Background Monitor Active: 3x Shake works even when minimized or screen-locked, and Volume Sequence works when minimized.'
+                      ? '🟢 24/7 Background Monitor Active: Volume Sequence works even when minimized.'
                       : '🟡 Background Monitor starting... Keep battery set to Unrestricted.'}
                   </Text>
                   <TouchableOpacity

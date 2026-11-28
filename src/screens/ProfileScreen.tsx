@@ -486,7 +486,7 @@ export default function ProfileScreen() {
                             <View style={{ flex: 1, paddingRight: 8 }}>
                                 <Text style={styles.infoLabel}>Disguised Tools & Covert SOS</Text>
                                 <Text style={styles.permissionSub}>
-                                    Stealth calculator trigger, shake & volume shortcuts
+                                    Stealth calculator trigger, weather tap & volume shortcuts
                                 </Text>
                             </View>
                         </View>

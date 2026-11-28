@@ -73,7 +73,7 @@
         android:foregroundServiceType="specialUse">
       <property
           android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-          android:value="Continuous emergency covert SOS shake and hardware volume trigger monitoring"/>
+          android:value="Continuous emergency covert SOS hardware volume trigger monitoring"/>
     </service>
     <service
         android:name=".CovertSOSHeadlessTaskService"

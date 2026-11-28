@@ -2,5 +2,5 @@
   <string name="app_name">Abucay Guardian</string>
   <string name="expo_splash_screen_resize_mode" translatable="false">cover</string>
   <string name="covert_accessibility_label">Abucay Guardian Covert Volume SOS</string>
-  <string name="covert_accessibility_description">Detects your secret hardware volume button pattern (UP, UP, DOWN, UP) even when the app is minimized or on the lock screen to silently send an emergency SOS. Never reads screen content.</string>
+  <string name="covert_accessibility_description">Detects your secret hardware volume button pattern (UP, DOWN, UP, DOWN, UP, DOWN) even when the app is minimized or on the lock screen to silently send an emergency SOS. Never reads screen content.</string>
 </resources>

@@ -8,7 +8,7 @@ import * as Location from 'expo-location';
 import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 
-SplashScreen.preventAutoHideAsync().catch(() => {});
+SplashScreen.preventAutoHideAsync().catch(() => { });
 import AppNavigator from './src/navigation/AppNavigator';
 import { AlertProvider, useAlert } from './src/context/AlertContext';
 import { AlertManager } from './src/components/AlertManager';
@@ -37,7 +37,6 @@ import { getDeviceBatteryLevel, getDevicePowerState, subscribeToBatteryHealth } 
 import { navigationRef, navigateToNotificationTarget } from './src/services/NavigationService';
 import { supabase } from './src/lib/supabase';
 import './src/services/BackgroundLocationTask';
-import { useCovertShake } from './src/hooks/useCovertShake';
 import { useCovertVolume } from './src/hooks/useCovertVolume';
 import { syncNativeCovertSOSState } from './src/services/SilentSOSService';
 
@@ -65,7 +64,7 @@ function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     // Safety timeout in case onLoad is delayed
     useEffect(() => {
         const safety = setTimeout(() => {
-            SplashScreen.hideAsync().catch(() => {});
+            SplashScreen.hideAsync().catch(() => { });
             setImageReady(true);
         }, 1200);
         return () => clearTimeout(safety);
@@ -87,7 +86,7 @@ function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
                 resizeMode="cover"
                 fadeDuration={0}
                 onLoad={() => {
-                    SplashScreen.hideAsync().catch(() => {});
+                    SplashScreen.hideAsync().catch(() => { });
                     setImageReady(true);
                 }}
             />
@@ -102,8 +101,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     const activeAlertRef = useRef<NDRRMCEmergencyAlertData | null>(null);
     activeAlertRef.current = activeNDRRMCAlert;
 
-    // Active Covert SOS Listeners: Hardware volume pattern & shake gesture
-    useCovertShake();
+    // Active Covert SOS Listener: Hardware volume button sequence
     useCovertVolume();
 
     useEffect(() => {
@@ -167,6 +165,12 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
         const nativeDismissSub = DeviceEventEmitter.addListener('onNativeEmergencyDismissed', () => {
             setActiveNDRRMCAlert(null);
             dismissEmergencyAlertNotifications().catch(() => { });
+        });
+
+        const silentSosSentSub = DeviceEventEmitter.addListener('onSilentSOSSent', () => {
+            if (Platform.OS !== 'android' || AppState.currentState === 'active') {
+                showToast({ message: 'SOS sent', type: 'success' });
+            }
         });
 
         const appStateSub = AppState.addEventListener('change', (nextState) => {
@@ -336,6 +340,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
             registerNDRRMCModalHandler(null);
             nativeAlertSub.remove();
             nativeDismissSub.remove();
+            silentSosSentSub.remove();
             appStateSub.remove();
             sub.remove();
             expoSub.remove();

@@ -11,7 +11,6 @@ object CovertSOSPreferences {
     private const val PREFS_NAME = "abucay_covert_sos_prefs"
     private const val KEY_IS_LOGGED_IN = "is_logged_in"
     private const val KEY_USER_ID = "user_id"
-    private const val KEY_SHAKE_ENABLED = "shake_enabled"
     private const val KEY_VOLUME_ENABLED = "volume_pattern_enabled"
     private const val KEY_WEATHER_TAP_ENABLED = "weather_tap_enabled"
 
@@ -22,14 +21,12 @@ object CovertSOSPreferences {
         context: Context,
         isLoggedIn: Boolean,
         userId: String?,
-        shakeEnabled: Boolean,
         volumePatternEnabled: Boolean,
         weatherTapEnabled: Boolean
     ) {
         prefs(context).edit()
             .putBoolean(KEY_IS_LOGGED_IN, isLoggedIn)
             .putString(KEY_USER_ID, userId)
-            .putBoolean(KEY_SHAKE_ENABLED, shakeEnabled)
             .putBoolean(KEY_VOLUME_ENABLED, volumePatternEnabled)
             .putBoolean(KEY_WEATHER_TAP_ENABLED, weatherTapEnabled)
             .apply()
@@ -41,9 +38,6 @@ object CovertSOSPreferences {
     fun getUserId(context: Context): String? =
         prefs(context).getString(KEY_USER_ID, null)
 
-    fun isShakeEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_SHAKE_ENABLED, true)
-
     fun isVolumePatternEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_VOLUME_ENABLED, true)
 
@@ -51,23 +45,25 @@ object CovertSOSPreferences {
         prefs(context).getBoolean(KEY_WEATHER_TAP_ENABLED, true)
 
     fun shouldRunBackgroundService(context: Context): Boolean {
-        return isLoggedIn(context) && (isShakeEnabled(context) || isVolumePatternEnabled(context))
+        return isLoggedIn(context) && isVolumePatternEnabled(context)
     }
 }
 
 /**
  * Shared sliding-window detector for the covert volume sequence:
- * VOLUME_UP -> VOLUME_UP -> VOLUME_DOWN -> VOLUME_UP within 4.0 seconds.
+ * VOLUME_UP -> VOLUME_DOWN -> VOLUME_UP -> VOLUME_DOWN -> VOLUME_UP -> VOLUME_DOWN within 5.0 seconds.
  */
-class VolumePatternMatcher(private val windowMs: Long = 4000L) {
+class VolumePatternMatcher(private val windowMs: Long = 5000L) {
     private val timestamps = mutableListOf<Long>()
     private val sequence = mutableListOf<Int>()
 
     private val targetPattern = listOf(
         KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN,
         KeyEvent.KEYCODE_VOLUME_UP,
         KeyEvent.KEYCODE_VOLUME_DOWN,
-        KeyEvent.KEYCODE_VOLUME_UP
+        KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN
     )
 
     @Synchronized

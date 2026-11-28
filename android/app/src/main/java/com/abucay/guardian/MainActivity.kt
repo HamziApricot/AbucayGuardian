@@ -20,7 +20,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
-  // Covert volume pattern state: UP -> UP -> DOWN -> UP within 4.0 seconds
+  // Covert volume pattern state: UP -> DOWN -> UP -> DOWN -> UP -> DOWN within 5.0 seconds
   private val volumeMatcher = VolumePatternMatcher()
   private var suppressNextUpKeyCode: Int? = null
 

@@ -730,7 +730,7 @@ export default function PermissionsOnboardingScreen({
                 </View>
               </View>
               <Text style={styles.cardDesc}>
-                Optional: Enable "Abucay Guardian Covert Volume SOS" in Accessibility so UP-UP-DOWN-UP works even when the screen is locked or volume is at 0%/100%.
+                Optional: Enable "Abucay Guardian Covert Volume SOS" in Accessibility so UP-DOWN-UP-DOWN-UP-DOWN works even when the screen is locked or volume is at 0%/100%.
               </Text>
             </View>
             <TouchableOpacity

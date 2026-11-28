@@ -9,7 +9,7 @@ import android.view.accessibility.AccessibilityEvent
 
 /**
  * Optional system-wide AccessibilityService that intercepts hardware volume button presses
- * (UP -> UP -> DOWN -> UP) when the app is minimized, over other apps, on the lock screen,
+ * (UP -> DOWN -> UP -> DOWN -> UP -> DOWN) when the app is minimized, over other apps, on the lock screen,
  * or even when device volume is already at 0% or 100%.
  *
  * Configured with `canRetrieveWindowContent="false"` so it never reads screen content.

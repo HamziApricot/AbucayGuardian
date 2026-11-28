@@ -7,7 +7,7 @@ import androidx.core.content.ContextCompat
 import com.facebook.react.HeadlessJsTaskService
 
 /**
- * Single native dispatch coordinator for all covert SOS triggers (shake, volume, accessibility).
+ * Single native dispatch coordinator for covert SOS triggers (volume, accessibility).
  * Enforces a shared 10-second cooldown and wakes the JS HeadlessJsTask without ever
  * launching MainActivity, waking the screen, or playing sound/vibration.
  */
@@ -24,10 +24,6 @@ object CovertSOSDispatcher {
 
         if (!CovertSOSPreferences.isLoggedIn(appContext)) {
             Log.d(TAG, "Skipped ($source): user not logged in")
-            return false
-        }
-        if (source == "shake" && !CovertSOSPreferences.isShakeEnabled(appContext)) {
-            Log.d(TAG, "Skipped (shake): disabled in covert settings")
             return false
         }
         if (source == "volume" && !CovertSOSPreferences.isVolumePatternEnabled(appContext)) {

@@ -28,7 +28,6 @@ class CovertSOSModule(reactContext: ReactApplicationContext) :
     fun syncSettings(
         isLoggedIn: Boolean,
         userId: String?,
-        shakeEnabled: Boolean,
         volumePatternEnabled: Boolean,
         weatherTapEnabled: Boolean,
         promise: Promise
@@ -39,7 +38,6 @@ class CovertSOSModule(reactContext: ReactApplicationContext) :
                 ctx,
                 isLoggedIn = isLoggedIn,
                 userId = userId,
-                shakeEnabled = shakeEnabled,
                 volumePatternEnabled = volumePatternEnabled,
                 weatherTapEnabled = weatherTapEnabled
             )
