@@ -3,7 +3,7 @@
     "name": "Abucay Guardian",
     "slug": "abucay-guardian",
     "scheme": "abucayguardian",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "sdkVersion": "58.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -51,7 +51,7 @@
         "backgroundColor": "#0D1F4E"
       },
       "package": "com.abucay.guardian",
-      "versionCode": 2,
+      "versionCode": 3,
       "config": {
         "googleMaps": {
           "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"

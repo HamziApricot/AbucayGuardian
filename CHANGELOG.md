@@ -2,6 +2,24 @@
 
 All notable changes to **Abucay Guardian** are documented in this file.
 
+## [1.0.2] - 2026-11-28
+
+### Added
+- **`"SOS sent"` Toast Confirmation (`SilentSOSService.ts`, `App.tsx`, `SOSScreen.tsx`)**: Added an `"SOS sent"` toast dialogue after SOS dispatch completes—shown in-app via `CustomToast` when active (`onSilentSOSSent` in `GlobalEmergencyWatcher` and `triggerSOS` on `SOSScreen`), and via Android `ToastAndroid` when Silent SOS triggers in the background or while minimized.
+
+### Changed & Improved
+- **Updated Silent SOS Volume Sequence (`CovertSOSPreferences.kt`, `CovertSOSService.kt`, `MainActivity.kt`, `CovertVolumeAccessibilityService.kt`, `strings.xml`, `useCovertVolume.ts`, `DisguisedCalculator.tsx`, `PermissionsOnboardingScreen.tsx`)**:
+  - Changed the covert hardware volume trigger sequence to **`UP → DOWN → UP → DOWN → UP → DOWN`** (6 alternating presses within a 5.0-second window) across foreground `MainActivity`, background `CovertSOSService`, and lock-screen `CovertVolumeAccessibilityService`.
+  - Updated `CovertSOSService.kt` volume broadcast debouncing (`keyCode == lastVolumeBroadcastKeyCode`) so simultaneous system stream updates remain deduplicated without dropping rapid alternating `UP`/`DOWN` presses.
+- **Version Bump (`app.json`, `package.json`, `package-lock.json`, `android/app/build.gradle`)**:
+  - Updated app version to `1.0.2` and Android `versionCode` to `3`.
+
+### Fixed & Removed
+- **Removed Shake-to-SOS Trigger (`useCovertShake.ts` removed, `App.tsx`, `SilentSOSService.ts`, `CovertSOSService.kt`, `CovertSOSPreferences.kt`, `CovertSOSModule.kt`, `CovertSOSDispatcher.kt`, `AndroidManifest.xml`, `DisguisedCalculator.tsx`, `ProfileScreen.tsx`)**:
+  - Removed 3-spike accelerometer shake detection, UI toggles, and background accelerometer/WakeLock overhead to eliminate accidental SOS alerts caused by everyday phone movement or shaking.
+
+---
+
 ## [1.0.1] - 2026-11-27
 
 ### Added
