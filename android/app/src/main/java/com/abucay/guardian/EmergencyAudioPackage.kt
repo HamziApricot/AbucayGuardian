@@ -10,7 +10,8 @@ class EmergencyAudioPackage : ReactPackage {
         return listOf(
             EmergencyAudioModule(reactContext),
             DirectSMSModule(reactContext),
-            CovertSOSModule(reactContext)
+            CovertSOSModule(reactContext),
+            AppUpdaterModule(reactContext)
         )
     }
 

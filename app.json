@@ -3,7 +3,7 @@
     "name": "Abucay Guardian",
     "slug": "abucay-guardian",
     "scheme": "abucayguardian",
-    "version": "1.0.2",
+    "version": "2.0.0",
     "sdkVersion": "58.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -51,7 +51,7 @@
         "backgroundColor": "#0D1F4E"
       },
       "package": "com.abucay.guardian",
-      "versionCode": 3,
+      "versionCode": 4,
       "config": {
         "googleMaps": {
           "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
@@ -77,6 +77,7 @@
         "FOREGROUND_SERVICE_DATA_SYNC",
         "FOREGROUND_SERVICE_SPECIAL_USE",
         "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "REQUEST_INSTALL_PACKAGES",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_BACKGROUND_LOCATION",

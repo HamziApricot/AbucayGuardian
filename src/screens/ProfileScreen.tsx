@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, TouchableOpacity, ScrollView,
-    TextInput, ActivityIndicator, Modal, Image, Switch
+    TextInput, ActivityIndicator, Modal, Image, Switch, DeviceEventEmitter
 } from 'react-native';
 import { useAlert } from '../context/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,6 +28,7 @@ import {
     speakDialogueText,
     stopEmergencySpeech,
 } from '../services/EmergencySpeechService';
+import { checkForAppUpdate, getCurrentAppVersion } from '../services/AppUpdateService';
 
 export default function ProfileScreen() {
     const { userProfile, user, signOut, refreshProfile } = useAuth();
@@ -43,6 +44,8 @@ export default function ProfileScreen() {
     const [phone, setPhone] = useState(userProfile?.phone ?? '');
     const [saving, setSaving] = useState(false);
     const [uploadingAvatar, setUploadingAvatar] = useState(false);
+    const [appVersion, setAppVersion] = useState('2.0.0');
+    const [checkingUpdate, setCheckingUpdate] = useState(false);
 
     // TextBee SMS Gateway Settings State
     const [showTextBeeModal, setShowTextBeeModal] = useState(false);
@@ -63,6 +66,9 @@ export default function ProfileScreen() {
         getEmergencySpeechSettings().then((s) => {
             setSpeechEnabled(s.enabled);
         });
+        getCurrentAppVersion().then((v) => {
+            if (v?.versionName) setAppVersion(v.versionName);
+        }).catch(() => {});
     }, []);
 
     const handleSaveTextBee = async () => {
@@ -410,7 +416,7 @@ export default function ProfileScreen() {
                         </View>
                     </View>
                     <InfoRow icon="location" label="Assigned Municipality" value="Abucay, Bataan" color={Colors.hotline} />
-                    <InfoRow icon="git-branch" label="System Version" value="v1.0.4-Guardian" color={Colors.textMuted} />
+                    <InfoRow icon="git-branch" label="System Version" value={`v${appVersion}-Guardian`} color={Colors.textMuted} />
                     <InfoRow icon="shield-checkmark" label="Protection Level" value="Active Monitoring" color={Colors.tracker} />
                 </View>
             </View>
@@ -525,6 +531,46 @@ export default function ProfileScreen() {
                             thumbColor="#FFFFFF"
                         />
                     </View>
+                    <View style={{ height: 12 }} />
+
+                    {/* App Version & Auto-Update Check */}
+                    <TouchableOpacity
+                        style={styles.permissionActionRow}
+                        disabled={checkingUpdate}
+                        activeOpacity={0.7}
+                        onPress={async () => {
+                            setCheckingUpdate(true);
+                            try {
+                                const info = await checkForAppUpdate({ force: true });
+                                if (info?.hasUpdate) {
+                                    DeviceEventEmitter.emit('onOpenAppUpdateModal', info);
+                                } else if (info) {
+                                    showToast({ message: `You're on the latest version (v${info.currentVersion}).`, type: 'success' });
+                                } else {
+                                    showToast({ message: 'Unable to check for updates right now.', type: 'warning' });
+                                }
+                            } finally {
+                                setCheckingUpdate(false);
+                            }
+                        }}
+                    >
+                        <View style={styles.permissionLeft}>
+                            <View style={[styles.infoIcon, { backgroundColor: '#2176AE15' }]}>
+                                <Ionicons name="cloud-download-outline" size={18} color={Colors.family} />
+                            </View>
+                            <View style={{ flex: 1, paddingRight: 8 }}>
+                                <Text style={styles.infoLabel}>App Updates</Text>
+                                <Text style={styles.permissionSub}>
+                                    {checkingUpdate ? 'Checking GitHub Releases...' : `Installed v${appVersion} • Tap to check for updates`}
+                                </Text>
+                            </View>
+                        </View>
+                        {checkingUpdate ? (
+                            <ActivityIndicator size="small" color={Colors.family} />
+                        ) : (
+                            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                        )}
+                    </TouchableOpacity>
                 </View>
             </View>
 

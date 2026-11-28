@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useImperativeHandle, forwardRef, useMemo } from 'react';
-import { StyleSheet, View, Text, Image, TouchableOpacity, Alert, Platform, Animated, Easing } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Alert, Platform, Animated, Easing } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { HeadingBeamSvg, PinPointerTipSvg } from './MarkerVisuals';
+import { HeadingBeamSvg, AvatarPinHub, BatteryPinStack } from './MarkerVisuals';
 import MapView, { Marker, Polyline, Circle, UrlTile } from './Map';
 import { getTrackingStatus } from '../utils/tracking';
 import { fetchAndCacheSafetyPOIs, INITIAL_SAFETY_GEOJSON } from '../services/SafetyPOIService';
@@ -372,75 +372,26 @@ const AnimatedFamilyMarker: React.FC<{
           />
         )}
 
-        {/* Double-Ring Avatar Frame with Crisp White Halo */}
-        <Animated.View
-          style={[
-            styles.avatarFrame,
-            {
-              transform: [{ scale: avatarScale }],
-            },
-            isSelected && styles.avatarFrameSelected,
-            isSOS && styles.avatarFrameDanger,
-          ]}
-        >
-          <View
-            style={[
-              styles.avatarColorRing,
-              {
-                borderColor: isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : markerColor,
-              },
-            ]}
-          >
-            {member.avatarUrl ? (
-              <Image source={{ uri: member.avatarUrl }} style={styles.avatar} />
-            ) : (
-              <View
-                style={[
-                  styles.avatarFallback,
-                  { backgroundColor: isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : markerColor },
-                ]}
-              >
-                {isSelf ? (
-                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.avatarInitial}>
-                    {member.name ? member.name.charAt(0).toUpperCase() : '?'}
-                  </Text>
-                )}
-              </View>
-            )}
-          </View>
+        {/* Triple-Ring Porcelain-Bezel Avatar Hub */}
+        <AvatarPinHub
+          avatarUrl={member.avatarUrl}
+          name={member.name}
+          isSelf={isSelf}
+          isSOS={isSOS}
+          isSelected={isSelected}
+          ringColor={isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : markerColor}
+          statusColor={member.speed > 1 ? '#22C55E' : status.color}
+          avatarScale={avatarScale}
+        />
 
-          {isSOS ? (
-            <View style={styles.sosMarkerBadge}>
-              <Ionicons name="warning" size={10} color="#FFFFFF" />
-            </View>
-          ) : (
-            <View
-              style={[
-                styles.statusDot,
-                { backgroundColor: member.speed > 1 ? '#22C55E' : status.color },
-              ]}
-            />
-          )}
-        </Animated.View>
-
-        {/* Bottom Stack: Live Battery Pill + Clean White-Outlined Pin Tip */}
-        <View style={styles.bottomPinStack}>
-          {batteryPct !== null && (
-            <View style={[styles.mapBatteryPill, { backgroundColor: batteryColor }]}>
-              <Ionicons
-                name={isCharging ? 'flash' : batteryPct <= 20 ? 'battery-dead' : batteryPct <= 50 ? 'battery-half' : 'battery-full'}
-                size={9}
-                color="#FFFFFF"
-              />
-              <Text style={styles.mapBatteryPillText}>{batteryPct}%</Text>
-            </View>
-          )}
-          <View style={styles.pointerTipWrapper}>
-            <PinPointerTipSvg color={isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : markerColor} />
-          </View>
-        </View>
+        {/* Bottom Stack: Live Battery Pill + Curved Teardrop Pin Tip */}
+        <BatteryPinStack
+          batteryPct={batteryPct}
+          isCharging={isCharging}
+          batteryColor={batteryColor}
+          ringColor={isSOS ? '#DC2626' : isSelf && isNavigating ? '#2563EB' : markerColor}
+          marginTop={-7}
+        />
       </Animated.View>
     </Marker>
   );
@@ -1091,8 +1042,8 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   flatHeadingContainer: {
-    width: 108,
-    height: 108,
+    width: 136,
+    height: 136,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
@@ -1117,94 +1068,6 @@ const styles = StyleSheet.create({
     fontSize: 9.5,
     fontWeight: '600',
     marginTop: 1,
-  },
-  avatarFrame: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    borderWidth: 2.5,
-    borderColor: '#FFFFFF',
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.28,
-    shadowRadius: 4.5,
-    elevation: 6,
-  },
-  avatarFrameSelected: {
-    shadowOpacity: 0.38,
-    shadowRadius: 6,
-    elevation: 8,
-  },
-  avatarColorRing: {
-    width: 47,
-    height: 47,
-    borderRadius: 23.5,
-    borderWidth: 3,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatar: {
-    width: 39,
-    height: 39,
-    borderRadius: 19.5,
-  },
-  avatarFallback: {
-    width: 39,
-    height: 39,
-    borderRadius: 19.5,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarInitial: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  statusDot: {
-    position: 'absolute',
-    top: -1,
-    right: -1,
-    width: 13,
-    height: 13,
-    borderRadius: 6.5,
-    borderWidth: 2.2,
-    borderColor: '#FFFFFF',
-    zIndex: 10,
-  },
-  bottomPinStack: {
-    alignItems: 'center',
-    marginTop: -6,
-    zIndex: 10,
-  },
-  mapBatteryPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2.5,
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-    borderRadius: 9,
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1.5 },
-    shadowOpacity: 0.28,
-    shadowRadius: 2,
-    elevation: 4,
-  },
-  mapBatteryPillText: {
-    color: '#FFFFFF',
-    fontSize: 8.5,
-    fontWeight: '900',
-    letterSpacing: 0.2,
-  },
-  pointerTipWrapper: {
-    marginTop: -1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   poiBadge: {
     width: 26,
@@ -1318,30 +1181,6 @@ const styles = StyleSheet.create({
   metaTextDanger: {
     color: '#B91C1C',
     fontWeight: '700',
-  },
-  avatarFrameDanger: {
-    borderColor: '#FFFFFF',
-    backgroundColor: '#FEF2F2',
-    shadowColor: '#DC2626',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.85,
-    shadowRadius: 10,
-    elevation: 12,
-  },
-  sosMarkerBadge: {
-    position: 'absolute',
-    top: -3,
-    right: -3,
-    backgroundColor: '#DC2626',
-    borderRadius: 9,
-    width: 18,
-    height: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.8,
-    borderColor: '#FFFFFF',
-    elevation: 6,
-    zIndex: 10,
   },
 });
 

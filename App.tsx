@@ -39,6 +39,8 @@ import { supabase } from './src/lib/supabase';
 import './src/services/BackgroundLocationTask';
 import { useCovertVolume } from './src/hooks/useCovertVolume';
 import { syncNativeCovertSOSState } from './src/services/SilentSOSService';
+import { UpdatePromptModal } from './src/components/UpdatePromptModal';
+import { checkForAppUpdate, type AppUpdateInfo } from './src/services/AppUpdateService';
 
 function FullscreenSplash({ onFinish }: { onFinish: () => void }) {
     const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -98,6 +100,7 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
     const { user } = useAuth();
     const { showToast } = useAlert();
     const [activeNDRRMCAlert, setActiveNDRRMCAlert] = useState<NDRRMCEmergencyAlertData | null>(null);
+    const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
     const activeAlertRef = useRef<NDRRMCEmergencyAlertData | null>(null);
     activeAlertRef.current = activeNDRRMCAlert;
 
@@ -172,6 +175,20 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                 showToast({ message: 'SOS sent', type: 'success' });
             }
         });
+
+        const manualUpdateSub = DeviceEventEmitter.addListener('onOpenAppUpdateModal', (info: AppUpdateInfo) => {
+            if (info?.hasUpdate) {
+                setAvailableUpdate(info);
+            }
+        });
+
+        const updateCheckTimer = setTimeout(() => {
+            checkForAppUpdate().then((info) => {
+                if (info?.hasUpdate) {
+                    setAvailableUpdate(info);
+                }
+            }).catch(() => { });
+        }, 2500);
 
         const appStateSub = AppState.addEventListener('change', (nextState) => {
             if (nextState === 'active') {
@@ -338,9 +355,11 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
 
         return () => {
             registerNDRRMCModalHandler(null);
+            clearTimeout(updateCheckTimer);
             nativeAlertSub.remove();
             nativeDismissSub.remove();
             silentSosSentSub.remove();
+            manualUpdateSub.remove();
             appStateSub.remove();
             sub.remove();
             expoSub.remove();
@@ -556,6 +575,11 @@ function GlobalEmergencyWatcher({ children }: { children: React.ReactNode }) {
                     setActiveNDRRMCAlert(null);
                     dismissEmergencyAlertNotifications().catch(() => { });
                 }}
+            />
+            <UpdatePromptModal
+                visible={Boolean(availableUpdate)}
+                updateInfo={availableUpdate}
+                onClose={() => setAvailableUpdate(null)}
             />
         </>
     );
